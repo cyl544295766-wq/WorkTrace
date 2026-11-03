@@ -225,5 +225,5 @@ npm run preview
 5. `TINYINT(1)` 在 MySQL 8.4 触发 `Warning 1681`；这是本批明确要求的布尔列写法，不影响建表。
 6. 前端 `ep` chunk 约 915 KB（gzip 295 KB），构建有体积提示但成功；后续按需拆分组件或接受该体积。
 7. 登录、强制改密、角色校验、业务接口与所有页面逻辑均未实现，路由 `meta.roles` 已预留。
-8. 数据库已迁移到 Docker（`docker compose`），原先安装在 WSL 里的原生 MySQL 已 `disable --now`，仅保留其数据卷未删除；当前唯一数据库实例是容器 `worktrace-mysql`。
+8. 数据库已迁移到 Docker（`docker compose`）。原先安装在 WSL 里的原生 MySQL 已彻底移除（包、配置、数据目录 `/var/lib/mysql` 均已删除），当前唯一数据库实例是容器 `worktrace-mysql`。
 9. Docker 下应用账号为 `wt_app`@`%`（原 DDL 为 `'wt_app'@'127.0.0.1'`，宿主机经端口映射连接时源地址是网关），端口只发布在 `127.0.0.1`，生产请按来源网段收紧。
