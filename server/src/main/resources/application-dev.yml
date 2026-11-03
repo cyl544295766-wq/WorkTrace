@@ -1,0 +1,11 @@
+spring:
+  datasource:
+    username: ${DB_USERNAME:wt_app}
+    # 仅本地开发默认值；生产必须通过环境变量 DB_PASSWORD 注入
+    password: ${DB_PASSWORD:WorkTrace_App_2026!}
+
+logging:
+  level:
+    root: INFO
+    com.worktrace: DEBUG
+    com.baomidou.mybatisplus: INFO

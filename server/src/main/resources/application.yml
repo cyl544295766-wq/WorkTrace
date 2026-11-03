@@ -1,0 +1,84 @@
+spring:
+  application:
+    name: worktrace
+  profiles:
+    default: dev
+  datasource:
+    # 三处时区对齐之一（JDBC 会话）。参数不可省，见 design.md §9.2。
+    url: "jdbc:mysql://127.0.0.1:3306/worktrace?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&useUnicode=true&connectionTimeZone=Asia/Shanghai&forceConnectionTimeZoneToSession=true&rewriteBatchedStatements=true&serverTimezone=Asia/Shanghai"
+    username: ${DB_USERNAME:wt_app}
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 5000
+      pool-name: WorkTraceHikari
+  session:
+    store-type: jdbc
+    jdbc:
+      platform: mysql
+      # 生产/开发都由 db/01_user_session.sql 建表，绝不让应用自动改结构
+      initialize-schema: never
+  mvc:
+    # 未知路由交给 GlobalExceptionHandler 统一返回 404 响应体
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      add-mappings: false
+  jackson:
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      adjust-dates-to-context-time-zone: false
+  sql:
+    init:
+      mode: never
+
+server:
+  # 单机部署：应用只监听本机，由 Nginx 反代
+  address: 127.0.0.1
+  port: 8080
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+  servlet:
+    session:
+      timeout: 7d
+      cookie:
+        name: SESSION
+        http-only: true
+        same-site: lax
+        # 内网 HTTP 阶段必须 false；升 HTTPS 时连同 HSTS 一起改（design.md §1.4）
+        secure: false
+        path: /
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+  health:
+    db:
+      enabled: true
+
+logging:
+  file:
+    path: logs
