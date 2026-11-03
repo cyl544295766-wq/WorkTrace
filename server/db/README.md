@@ -3,6 +3,12 @@
 本目录是 T02 的唯一交付：8 个 DDL 分片，按序号顺序在 **MySQL 8.0.20+** 实例上执行。
 分片只负责建库建表、系统 seed 与最小权限，不包含任何业务数据。
 
+> **Docker 部署**：仓库根目录的 `docker-compose.yml` 会把本目录 01–08 自动挂载到
+> `/docker-entrypoint-initdb.d`，首次 `docker compose up -d` 时按序执行，无需手动运行。
+> 另有两个容器专用脚本（不属于 T02 分片）：`docker/mysql-init/00_load_tz.sh`（加载时区表）
+> 与 `09_docker_app_user.sql`（把 `wt_app` 主机从 `127.0.0.1` 改为 `%`，适配端口映射访问）。
+> 本机直接执行时不需要这两个脚本。
+
 ## 1. 执行顺序
 
 | 顺序 | 文件 | 内容 |

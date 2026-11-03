@@ -1,0 +1,46 @@
+name: worktrace
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: worktrace-mysql
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      # 仅本地开发默认值；生产通过 .env 覆盖 MYSQL_ROOT_PASSWORD
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-WorkTrace_Root_2026!}
+    command:
+      # 与 server/db/01_user_session.sql 头部建议的实例参数一致
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+      - --lower-case-table-names=0
+      - --max-connections=200
+      - --log-error-verbosity=2
+    ports:
+      # 只发布到本机回环；应用连接 127.0.0.1:3306
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - worktrace-mysql-data:/var/lib/mysql
+      # 初始化脚本按文件名字典序执行：
+      # 00 加载时区表 -> 01..08 项目 DDL -> 09 Docker 账号适配
+      - ./docker/mysql-init/00_load_tz.sh:/docker-entrypoint-initdb.d/00_load_tz.sh:ro
+      - ./server/db/01_user_session.sql:/docker-entrypoint-initdb.d/01_user_session.sql:ro
+      - ./server/db/02_task.sql:/docker-entrypoint-initdb.d/02_task.sql:ro
+      - ./server/db/03_note_time.sql:/docker-entrypoint-initdb.d/03_note_time.sql:ro
+      - ./server/db/04_stat.sql:/docker-entrypoint-initdb.d/04_stat.sql:ro
+      - ./server/db/05_report.sql:/docker-entrypoint-initdb.d/05_report.sql:ro
+      - ./server/db/06_notify_audit.sql:/docker-entrypoint-initdb.d/06_notify_audit.sql:ro
+      - ./server/db/07_export.sql:/docker-entrypoint-initdb.d/07_export.sql:ro
+      - ./server/db/08_sys_seed.sql:/docker-entrypoint-initdb.d/08_sys_seed.sql:ro
+      - ./docker/mysql-init/09_docker_app_user.sql:/docker-entrypoint-initdb.d/09_docker_app_user.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  worktrace-mysql-data:
+    name: worktrace-mysql-data

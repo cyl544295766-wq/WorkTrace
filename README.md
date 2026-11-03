@@ -2,14 +2,14 @@
 
 个人工作留痕系统。本仓库当前只包含 **T01–T04 工程骨架**：后端骨架、数据库 DDL、前端壳层、统一响应与全局异常。
 
-不包含登录认证、任何业务模块、业务接口、ECharts 报表实现与部署脚本。所有页面均为占位页，用于验证路由、布局与主题。
+不包含登录认证、任何业务模块、业务接口、ECharts 报表实现与应用部署脚本。所有页面均为占位页，用于验证路由、布局与主题。数据库统一由 `docker-compose.yml` 管理。
 
 ## 技术栈
 
 | 层 | 选型 |
 |---|---|
 | 后端 | Java 17、Spring Boot 3.3.6、MyBatis-Plus 3.5.9、Spring Session JDBC、Caffeine、Lombok、spring-security-crypto（仅 BCrypt） |
-| 数据库 | MySQL 8.0.20+（验证使用 8.4.11 LTS）、InnoDB、utf8mb4 / utf8mb4_0900_ai_ci、DATETIME(3) |
+| 数据库 | MySQL 8.4（Docker 容器运行，验证使用 8.4.13）、InnoDB、utf8mb4 / utf8mb4_0900_ai_ci、DATETIME(3) |
 | 前端 | Node.js 20+、Vue 3.5、Vite 6、TypeScript 5.7、Element Plus（按需）、Pinia、Vue Router 4、Axios、ECharts（懒加载） |
 
 明确未引入：Spring Security 全家桶、Redis、消息队列、Elasticsearch、定时任务框架、Tailwind CSS。
@@ -18,6 +18,8 @@
 
 ```
 WorkTrace/
+├─ docker-compose.yml           # MySQL 容器编排（启动、初始化、健康检查）
+├─ docker/mysql-init/           # 容器专用初始化：时区表、Docker 账号适配
 ├─ server/
 │  ├─ db/                         # T02：8 个 DDL 分片 + 执行/验收说明
 │  ├─ src/main/java/com/worktrace/
@@ -54,33 +56,52 @@ WorkTrace/
 - JDK 17
 - Maven 3.9+
 - Node.js 20+、npm 10+
-- MySQL 8.0.20+，且应用账号可连接
+- Docker + Docker Compose（推荐，用于统一管理数据库）；或本机 MySQL 8.0.20+
 
-### 1. 初始化数据库
+### 1. 启动数据库（Docker）
 
-在 `server/db` 目录按顺序执行 8 个分片：
+仓库根目录的 `docker-compose.yml` 把 MySQL 统一跑在容器里，首次启动会自动按序执行全部 DDL：
 
 ```bash
-mysql --default-character-set=utf8mb4 -u root -p < 01_user_session.sql
-mysql --default-character-set=utf8mb4 -u root -p < 02_task.sql
-mysql --default-character-set=utf8mb4 -u root -p < 03_note_time.sql
-mysql --default-character-set=utf8mb4 -u root -p < 04_stat.sql
-mysql --default-character-set=utf8mb4 -u root -p < 05_report.sql
-mysql --default-character-set=utf8mb4 -u root -p < 06_notify_audit.sql
-mysql --default-character-set=utf8mb4 -u root -p < 07_export.sql
-mysql --default-character-set=utf8mb4 -u root -p < 08_sys_seed.sql
+docker compose up -d        # 启动 MySQL 并初始化（首次约 30 秒）
+docker compose ps           # 查看状态，等 health 变为 healthy
+docker compose logs -f mysql
 ```
 
-`08_sys_seed.sql` 会创建开发账号 `wt_app`（密码 `WorkTrace_App_2026!`）和初始管理员 `admin`（密码 `Init@123456`，首次登录强制改密）。生产环境必须替换密码，并由 DBA 管理账号。
+容器使用 `mysql:8.4` 镜像，实例参数与 `server/db/01_user_session.sql` 头部建议一致（utf8mb4 / `utf8mb4_0900_ai_ci` / `default-time-zone=+08:00`），并把数据保存在命名卷 `worktrace-mysql-data` 中。
 
-**时区表必须可用。** JDBC 使用 `connectionTimeZone=Asia/Shanghai`，MySQL 需要已加载时区表：
+常用操作：
 
 ```bash
-# Linux / WSL
+docker compose down         # 停止，数据保留
+docker compose down -v      # 停止并清空数据卷（下次 up 会重新执行 DDL）
+docker compose restart mysql
+```
+
+初始化脚本由两部分组成，按文件名字典序执行：
+
+| 顺序 | 来源 | 作用 |
+|---|---|---|
+| `00_load_tz.sh` | `docker/mysql-init/` | 加载 MySQL 时区表（JDBC 使用 `Asia/Shanghai` 必需） |
+| `01`–`08` | `server/db/` | 项目 8 个 DDL 分片（T02 交付物） |
+| `09_docker_app_user.sql` | `docker/mysql-init/` | 把 `wt_app` 账号主机改为 `%`，适配宿主机经端口映射连接 |
+
+> 本环境若无法访问 Docker Hub，可先从镜像站拉取再打标签：
+> `docker pull docker.m.daocloud.io/library/mysql:8.4 && docker tag docker.m.daocloud.io/library/mysql:8.4 mysql:8.4`
+
+**用本机 MySQL 替代 Docker（可选）**：在 `server/db` 目录按 01→08 顺序执行 8 个分片即可，此时 `wt_app` 按设计使用 `'wt_app'@'127.0.0.1'`，无需 `09` 适配脚本；并自行加载时区表：
+
+```bash
 mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root -p mysql
 ```
 
+`08_sys_seed.sql` 会创建应用账号 `wt_app`（密码 `WorkTrace_App_2026!`）和初始管理员 `admin`（密码 `Init@123456`，首次登录强制改密）。生产环境必须替换密码，并由 DBA 管理账号。
+
 验证：
+
+```bash
+docker exec -it worktrace-mysql mysql -u root -p   # 容器内登录
+```
 
 ```sql
 SELECT CONVERT_TZ('2026-11-03 00:00:00', 'UTC', 'Asia/Shanghai');
@@ -91,7 +112,7 @@ SELECT CONVERT_TZ('2026-11-03 00:00:00', 'UTC', 'Asia/Shanghai');
 
 ### 2. 启动后端
 
-开发环境默认使用 `dev` profile，数据库密码有本地默认值；也可显式注入：
+应用默认连接 `127.0.0.1:3306`（即上面的 Docker MySQL），开发环境使用 `dev` profile，数据库密码有本地默认值；也可显式注入：
 
 ```bash
 cd server
@@ -100,11 +121,13 @@ export DB_PASSWORD='WorkTrace_App_2026!'
 mvn spring-boot:run
 ```
 
-或打包后运行（JVM 时区必须固定）：
+或打包后运行（JVM 时区必须固定；Windows PowerShell 下参数需要加引号）：
 
 ```bash
 mvn clean package
 java -Duser.timezone=Asia/Shanghai -jar target/worktrace-server-0.1.0-SNAPSHOT.jar
+# PowerShell:
+java '-Duser.timezone=Asia/Shanghai' -jar target\worktrace-server-0.1.0-SNAPSHOT.jar
 ```
 
 服务默认监听 `127.0.0.1:8080`。验证：
@@ -163,8 +186,10 @@ npm run preview
 
 | 配置 | 默认值 | 说明 |
 |---|---|---|
-| `DB_USERNAME` | `wt_app` | 数据库账号 |
+| `DB_USERNAME` | `wt_app` | 数据库账号（Docker 下主机为 `%`，见 `docker/mysql-init/09_docker_app_user.sql`） |
 | `DB_PASSWORD` | dev: `WorkTrace_App_2026!`；prod: 无默认值 | 生产必须注入 |
+| `MYSQL_ROOT_PASSWORD` | `WorkTrace_Root_2026!` | 容器 root 密码，可在根目录 `.env` 覆盖 |
+| 数据库地址 | `127.0.0.1:3306` | Docker 端口映射，仅发布到本机回环 |
 | `server.address` | `127.0.0.1` | 单机部署，由反向代理暴露 |
 | `server.port` | `8080` | |
 | `spring.profiles.default` | `dev` | |
@@ -186,8 +211,9 @@ npm run preview
 
 ## 已验证
 
-- **DDL**：MySQL 8.4.11 上 8 个分片全部执行成功，18 张表；33 项结构检查通过（引擎/字符集、无 TIMESTAMP、唯一键、生成列软删除唯一性、4 组 UPSERT `ROW_COUNT()=2`、审计表只追加权限、Session 索引等）。
-- **后端**：`mvn clean package` 成功，8 个测试全部通过；jar 启动后 ping、health、404 行为符合契约。
+- **数据库（Docker）**：`docker compose up -d` 自动完成初始化，容器 `worktrace-mysql`（MySQL 8.4.13）`healthy`；18 张表、0 个 `TIMESTAMP` 列、引擎/排序规则全部一致、时区表可用（`CONVERT_TZ` 返回 `+08:00`）、`wt_app`@`%` 权限正确且 `audit_log` 只有 `SELECT, INSERT`、管理员 seed 就位。
+- **DDL**：8 个分片在 MySQL 8.4 上执行成功，33 项结构检查通过（引擎/字符集、唯一键、生成列软删除唯一性、4 组 UPSERT `ROW_COUNT()=2`、审计表只追加权限、Session 索引等）。
+- **后端**：`mvn clean package` 成功，8 个测试全部通过；在 Windows 上连接容器 MySQL 启动后，ping、health（`UP` 说明数据库连通）、404 行为符合契约。
 - **前端**：`npm run type-check` 与 `npm run build` 成功；13 条路由均能渲染，控制台无报错；360px 视口下文档无横向滚动（顶部导航自身可横向滑动）。
 
 ## 已知差异与后续事项
@@ -199,3 +225,5 @@ npm run preview
 5. `TINYINT(1)` 在 MySQL 8.4 触发 `Warning 1681`；这是本批明确要求的布尔列写法，不影响建表。
 6. 前端 `ep` chunk 约 915 KB（gzip 295 KB），构建有体积提示但成功；后续按需拆分组件或接受该体积。
 7. 登录、强制改密、角色校验、业务接口与所有页面逻辑均未实现，路由 `meta.roles` 已预留。
+8. 数据库已迁移到 Docker（`docker compose`），原先安装在 WSL 里的原生 MySQL 已 `disable --now`，仅保留其数据卷未删除；当前唯一数据库实例是容器 `worktrace-mysql`。
+9. Docker 下应用账号为 `wt_app`@`%`（原 DDL 为 `'wt_app'@'127.0.0.1'`，宿主机经端口映射连接时源地址是网关），端口只发布在 `127.0.0.1`，生产请按来源网段收紧。
