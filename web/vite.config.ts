@@ -1,58 +1,30 @@
-import { fileURLToPath, URL } from 'node:url';
+import { fileURLToPath, URL } from 'node:url'
 
-import vue from '@vitejs/plugin-vue';
-import { defineConfig } from 'vite';
-import viteCompression from 'vite-plugin-compression';
-import AutoImport from 'unplugin-auto-import/vite';
-import Components from 'unplugin-vue-components/vite';
-import { ElementPlusResolver } from 'unplugin-vue-components/resolvers';
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
 
-export default defineConfig(() => ({
-  plugins: [
-    vue(),
-    AutoImport({
-      imports: ['vue', 'vue-router', 'pinia'],
-      resolvers: [ElementPlusResolver()],
-      dts: 'src/auto-imports.d.ts',
-    }),
-    Components({
-      resolvers: [ElementPlusResolver({ importStyle: 'sass' })],
-      dts: 'src/components.d.ts',
-    }),
-    viteCompression({ algorithm: 'gzip', threshold: 1024 }),
-  ],
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [vue()],
+
   resolve: {
     alias: {
+      // '@' → 项目 src 目录（tsconfig.json 的 paths 已同步配置）
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
-  css: {
-    preprocessorOptions: {
-      scss: {
-        api: 'modern-compiler' as const,
-      },
-    },
-  },
+
   server: {
     port: 5173,
     proxy: {
+      // 前端请求 /api/** 时转发给本地后端，规避开发期跨域
       '/api': {
-        target: 'http://127.0.0.1:8080',
-        changeOrigin: false,
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        // 后端本身就以 /api 为前缀，无需 rewrite 去掉前缀；
+        // 若后端没有 /api 前缀，改为：
+        // rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
   },
-  build: {
-    target: 'es2020',
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          'vue-core': ['vue', 'vue-router', 'pinia'],
-          ep: ['element-plus'],
-          echarts: ['echarts/core', 'echarts/charts', 'echarts/components'],
-        },
-      },
-    },
-    chunkSizeWarningLimit: 600,
-  },
-}));
+})
