@@ -84,3 +84,12 @@ management:
 logging:
   file:
     path: logs
+
+# ── AI 报告生成：OpenAI / DeepSeek 兼容的 Chat Completions ────────────
+ai:
+  # OpenAI: https://api.openai.com/v1 ｜ DeepSeek: https://api.deepseek.com/v1
+  base-url: https://api.deepseek.com/v1
+  # 生产通过环境变量 AI_API_KEY 注入（留空则生成时返回"未配置 ai.api-key"）
+  api-key: ${AI_API_KEY:}
+  # DeepSeek: deepseek-chat ｜ OpenAI: gpt-4o-mini
+  model: deepseek-chat

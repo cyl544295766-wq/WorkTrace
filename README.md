@@ -95,7 +95,7 @@ docker compose restart mysql
 mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root -p mysql
 ```
 
-`08_sys_seed.sql` 会创建应用账号 `wt_app`（密码 `WorkTrace_App_2026!`）和初始管理员 `admin`（密码 `Init@123456`，首次登录强制改密）。生产环境必须替换密码，并由 DBA 管理账号。
+`08_sys_seed.sql` 会创建应用账号 `wt_app`（密码 `WorkTrace_App_2026!`）；`10_sys_user.sql` 创建演示账号 `admin`（密码 `admin123`，明文，仅供登录模块联调，生产必须改存 BCrypt 哈希并替换密码）。
 
 验证：
 

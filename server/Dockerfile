@@ -20,8 +20,10 @@ ENV JAVA_TOOL_OPTIONS=-Duser.timezone=Asia/Shanghai
 WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 
-# 非 root 运行
-RUN useradd --system --uid 1001 worktrace
+# 非 root 运行；logback 写 /app/logs，预先建好并交给应用用户，否则启动即崩
+RUN useradd --system --uid 1001 worktrace \
+ && mkdir -p /app/logs \
+ && chown -R worktrace:worktrace /app/logs
 USER worktrace
 
 EXPOSE 8080

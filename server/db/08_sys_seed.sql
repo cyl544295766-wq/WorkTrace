@@ -28,9 +28,7 @@ INSERT INTO sys_config (cfg_key, cfg_value, value_type, remark) VALUES
  ('digest_time',           '18:00',       'TIME',   '每日未完成小结时刻'),
  ('postpone_threshold',    '2',           'INT',    '改期 >= 此值标记反复拖延（P1 G-03）'),
  ('overdue_threshold_days','3',           'INT',    '逾期 >= 此天数标记反复拖延（P1 G-03）'),
- ('global_timezone',       'Asia/Shanghai','STRING','v1.1 全局时区，app_user.timezone 必须等于它'),
- ('account_source',        'BOTH',        'STRING', '建号方式：INVITE=仅邀请码 / ADMIN_ONLY=仅管理员建号 / BOTH=两者皆可。对应待确认 Q2，默认 BOTH，改配置即生效，无需改代码'),
- ('invite_code_ttl_hours', '24',          'INT',    '邀请码有效期（account_source=ADMIN_ONLY 时不生效）'),
+ ('global_timezone',       'Asia/Shanghai','STRING','v1.1 全局时区，所有时间展示以它为准'),
  ('login_max_fail',        '5',           'INT',    '连续失败锁定阈值'),
  ('login_lock_minutes',    '10',          'INT',    '锁定时长'),
  ('stat_rebuild_days',     '60',          'INT',    '每日兜底重算回溯天数'),
@@ -40,13 +38,6 @@ INSERT INTO sys_config (cfg_key, cfg_value, value_type, remark) VALUES
 -- ---------- seed：定时任务锁记录（预插入，保证条件 UPDATE 能命中）
 INSERT INTO sys_lock (lock_name) VALUES
   ('stat_recalc_full'), ('reminder_due'), ('digest_daily'), ('weekly_missing'), ('backup_daily');
-
--- ---------- seed：首个管理员 admin / Init@123456（上线后首登强制改密）
--- 哈希由 BCrypt strength=10 实际生成；不是文档里的占位示例。
-INSERT INTO app_user (username, password_hash, nickname, role, status, must_change_pwd)
-VALUES ('admin',
-        '$2b$10$RLkFBKwjoKs7U4nSt9uSX.aW0jbudD1Cl4jpr4M6dz.BovhbjkFWC',
-        '系统管理员', 'ADMIN', 'ACTIVE', 1);
 
 -- ------------------------------------------------------------ 权限收敛（MySQL 版）
 -- 应用账号：业务表全 DML，审计表只追加。
@@ -58,8 +49,6 @@ VALUES ('admin',
 -- audit_log 只授 SELECT/INSERT，才能真实满足 T02 验收点 9。
 CREATE USER 'wt_app'@'127.0.0.1' IDENTIFIED BY 'WorkTrace_App_2026!';
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.app_user        TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.invite_code     TO 'wt_app'@'127.0.0.1';
 GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.task            TO 'wt_app'@'127.0.0.1';
 GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.tag             TO 'wt_app'@'127.0.0.1';
 GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.task_tag        TO 'wt_app'@'127.0.0.1';

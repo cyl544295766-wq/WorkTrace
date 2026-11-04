@@ -13,19 +13,22 @@
 
 | 顺序 | 文件 | 内容 |
 |---|---|---|
-| 01 | `01_user_session.sql` | `CREATE DATABASE`、`app_user`、`invite_code`、Spring Session 两张官方表 |
+| 01 | `01_user_session.sql` | `CREATE DATABASE` |
+| 01a | `01a_spring_session.sql` | Spring Session 两张官方表（08 的授权前置依赖它） |
 | 02 | `02_task.sql` | `task`、`tag`、`task_tag` |
 | 03 | `03_note_time.sql` | `note`、`note_task_rel`、`time_entry` |
 | 04 | `04_stat.sql` | `daily_stat`、`weekly_stat`（双指标可空） |
 | 05 | `05_report.sql` | `report` |
 | 06 | `06_notify_audit.sql` | `notification`、`audit_log` |
 | 07 | `07_export.sql` | `export_job` + `uk_export_active` |
-| 08 | `08_sys_seed.sql` | `sys_lock`、`sys_config`、管理员 seed、`wt_app` 账号与授权 |
+| 08 | `08_sys_seed.sql` | `sys_lock`、`sys_config`、`wt_app` 账号与授权 |
+| 10 | `10_sys_user.sql` | `sys_user` 表、演示账号 seed、`wt_app` 对 `sys_user` 的授权 |
 
 全新实例上依次执行：
 
 ```bash
 mysql --default-character-set=utf8mb4 -u root -p < 01_user_session.sql
+mysql --default-character-set=utf8mb4 -u root -p < 01a_spring_session.sql
 mysql --default-character-set=utf8mb4 -u root -p < 02_task.sql
 mysql --default-character-set=utf8mb4 -u root -p < 03_note_time.sql
 mysql --default-character-set=utf8mb4 -u root -p < 04_stat.sql
@@ -33,6 +36,7 @@ mysql --default-character-set=utf8mb4 -u root -p < 05_report.sql
 mysql --default-character-set=utf8mb4 -u root -p < 06_notify_audit.sql
 mysql --default-character-set=utf8mb4 -u root -p < 07_export.sql
 mysql --default-character-set=utf8mb4 -u root -p < 08_sys_seed.sql
+mysql --default-character-set=utf8mb4 -u root -p < 10_sys_user.sql
 ```
 
 也可以在 `mysql` 客户端内执行 `SOURCE 01_user_session.sql;`，依此类推。
@@ -74,7 +78,7 @@ SELECT @@version, @@sql_mode, @@lower_case_table_names,
 - 所有时间列使用 `DATETIME(3)`；**全库没有任何 `TIMESTAMP` 列**，避免隐式时区转换。
 - 布尔语义使用 `TINYINT(1)`，主键统一 `BIGINT NOT NULL AUTO_INCREMENT`。
 - 软删除唯一约束使用 `STORED` 生成列 + 唯一索引（MySQL 没有部分索引）：
-  `app_user.username_active`、`tag.name_active`、`time_entry.running_owner`、`export_job.active_owner`。
+  `tag.name_active`、`time_entry.running_owner`、`export_job.active_owner`。
 - JSON 列统一 `JSON NOT NULL`，无默认值；Java 实体必须初始化为 `"[]"` / `"{}"` 后再写入。
 
 ## 4. 账号与权限
@@ -100,10 +104,13 @@ SELECT @@version, @@sql_mode, @@lower_case_table_names,
 SHOW GRANTS FOR 'wt_app'@'127.0.0.1';
 ```
 
+> Docker 容器初始化时 09 脚本会把它重命名为 `'wt_app'@'%'`，此时用
+> `SHOW GRANTS FOR 'wt_app'@'%';` 查看。`sys_user` 的授权在 `10_sys_user.sql` 中单独授予。
+
 ## 5. Seed 数据
 
-- 管理员：`admin` / `Init@123456`，`must_change_pwd=1`，首次登录必须改密。
-- 密码哈希为 BCrypt strength=10 实际生成值，不是占位符。
+- 演示账号（`10_sys_user.sql`）：`admin` / `admin123`，明文存储、由代码端"直接比对"分支匹配；
+  生产环境请改存 BCrypt 哈希（strength=10）。
 - `sys_config` 写入全局时区、提醒时刻、登录锁定阈值、导出保留时长等系统参数。
 - `sys_lock` 预插入定时任务锁行，保证后续 `UPDATE ... WHERE locked_until ...` 能命中。
 
@@ -125,7 +132,7 @@ ORDER BY table_name;
 SELECT table_name, index_name, column_name
 FROM information_schema.statistics
 WHERE table_schema = 'work_system'
-  AND index_name IN ('uk_user_username_active', 'uk_tag_owner_name_active',
+  AND index_name IN ('uk_tag_owner_name_active',
                      'uk_te_running', 'uk_export_active');
 
 -- 4) 双指标可空，原值列不可空
