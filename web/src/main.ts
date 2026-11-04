@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import { createPinia } from 'pinia'
+import router from './router'
 
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css' // 默认主题（全量样式，组件与 ElMessage 等函数式组件共用）
@@ -13,6 +14,9 @@ const app = createApp(App)
 
 // 必须先装 pinia：request.ts 的拦截器里会用到 useUserStore()
 app.use(createPinia())
+
+// 路由：登录/任务列表等页面切换（必须在 mount 前注册）
+app.use(router)
 
 // 全量注册 Element Plus（含 ElMessage/ElMessageBox 等函数式组件的上下文）
 app.use(ElementPlus, { locale: zhCn })
