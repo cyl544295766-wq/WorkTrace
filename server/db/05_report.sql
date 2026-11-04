@@ -1,7 +1,7 @@
 -- ============================================================
 -- 05_report.sql  日报/周报（F-01 / F-02）
 -- ============================================================
-USE worktrace;
+USE work_system;
 
 CREATE TABLE report (
     id            BIGINT      NOT NULL AUTO_INCREMENT,

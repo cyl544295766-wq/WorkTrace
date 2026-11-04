@@ -1,7 +1,7 @@
 -- ============================================================
 -- 08_sys_seed.sql  系统锁 / 配置 / 初始数据（07 已被 export_job 占用）
 -- ============================================================
-USE worktrace;
+USE work_system;
 
 CREATE TABLE sys_lock (
     lock_name    VARCHAR(64) NOT NULL,
@@ -52,34 +52,34 @@ VALUES ('admin',
 -- 应用账号：业务表全 DML，审计表只追加。
 --
 -- 与 design.md §4.8 的差异说明（必须保留）：
--- MySQL 的权限是"加法模型"，不存在负授权。先 GRANT ON worktrace.* 再
--- REVOKE ON worktrace.audit_log 会报 ERROR 1147（没有这条表级授权可撤销）。
+-- MySQL 的权限是"加法模型"，不存在负授权。先 GRANT ON work_system.* 再
+-- REVOKE ON work_system.audit_log 会报 ERROR 1147（没有这条表级授权可撤销）。
 -- 因此这里改为逐表 GRANT：除 audit_log 外的表授 SELECT/INSERT/UPDATE/DELETE，
 -- audit_log 只授 SELECT/INSERT，才能真实满足 T02 验收点 9。
 CREATE USER 'wt_app'@'127.0.0.1' IDENTIFIED BY 'WorkTrace_App_2026!';
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.app_user        TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.invite_code     TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.task            TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.tag             TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.task_tag        TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.note            TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.note_task_rel   TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.time_entry      TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.daily_stat      TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.weekly_stat     TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.report          TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.notification    TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.export_job      TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.sys_lock        TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.sys_config      TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.app_user        TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.invite_code     TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.task            TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.tag             TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.task_tag        TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.note            TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.note_task_rel   TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.time_entry      TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.daily_stat      TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.weekly_stat     TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.report          TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.notification    TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.export_job      TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.sys_lock        TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.sys_config      TO 'wt_app'@'127.0.0.1';
 
 -- ★ 审计表收回写权限：只 SELECT, INSERT
-GRANT SELECT, INSERT ON worktrace.audit_log TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT ON work_system.audit_log TO 'wt_app'@'127.0.0.1';
 
 -- ★ 会话表需要 UPDATE（刷新 LAST_ACCESS_TIME）+ DELETE（过期清理）
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.SPRING_SESSION TO 'wt_app'@'127.0.0.1';
-GRANT SELECT, INSERT, UPDATE, DELETE ON worktrace.SPRING_SESSION_ATTRIBUTES TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.SPRING_SESSION TO 'wt_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON work_system.SPRING_SESSION_ATTRIBUTES TO 'wt_app'@'127.0.0.1';
 
 FLUSH PRIVILEGES;
 -- 迁移/备份账号另行创建，仅部署时使用（不做应用连接账号）

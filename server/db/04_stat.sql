@@ -2,7 +2,7 @@
 -- 04_stat.sql  预聚合（F-01 / G-01 唯一数据源）
 -- 写入方：只有 StatAggregatorService；读取方：报表 / 周报 / 时间汇总
 -- ============================================================
-USE worktrace;
+USE work_system;
 
 CREATE TABLE daily_stat (
     id            BIGINT      NOT NULL AUTO_INCREMENT,

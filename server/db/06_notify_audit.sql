@@ -1,7 +1,7 @@
 -- ============================================================
 -- 06_notify_audit.sql  站内通知（H-01）与审计
 -- ============================================================
-USE worktrace;
+USE work_system;
 
 CREATE TABLE notification (
     id           BIGINT       NOT NULL AUTO_INCREMENT,

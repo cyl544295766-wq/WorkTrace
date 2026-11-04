@@ -1,7 +1,7 @@
 -- ============================================================
 -- 03_note_time.sql  笔记（D-01）与时间记录（E-01）
 -- ============================================================
-USE worktrace;
+USE work_system;
 
 CREATE TABLE note (
     id         BIGINT       NOT NULL AUTO_INCREMENT,

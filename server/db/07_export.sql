@@ -1,7 +1,7 @@
 -- ============================================================
 -- 07_export.sql  数据导出任务（I-01，r2 新增 P0）
 -- ============================================================
-USE worktrace;
+USE work_system;
 
 CREATE TABLE export_job (
     id         BIGINT       NOT NULL AUTO_INCREMENT,

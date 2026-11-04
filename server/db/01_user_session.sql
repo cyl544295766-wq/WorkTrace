@@ -10,11 +10,11 @@
 -- innodb_buffer_pool_size=2G
 -- max_connections=200
 
-CREATE DATABASE IF NOT EXISTS worktrace
+CREATE DATABASE IF NOT EXISTS work_system
   DEFAULT CHARACTER SET utf8mb4
   DEFAULT COLLATE utf8mb4_0900_ai_ci;
 
-USE worktrace;
+USE work_system;
 
 CREATE TABLE app_user (
     id              BIGINT       NOT NULL AUTO_INCREMENT,

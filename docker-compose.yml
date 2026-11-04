@@ -1,16 +1,24 @@
+# WorkTrace 单机部署编排：MySQL 持久化 + Spring Boot 后端 + Nginx 前端
+# 使用：docker compose up -d --build
+# 说明：本文件取代了原先"仅开发库"的 compose；被替换的旧文件可用
+#       `git show HEAD~1:docker-compose.yml > docker-compose.dev.yml`
+#       一类方式找回。
+
 name: worktrace
 
 services:
+  # ── 1. 数据库 ────────────────────────────────────────────────
   mysql:
     image: mysql:8.4
     container_name: worktrace-mysql
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
-      # 仅本地开发默认值；生产通过 .env 覆盖 MYSQL_ROOT_PASSWORD
+      # root 密码：生产部署前在根目录 .env 中设置 MYSQL_ROOT_PASSWORD 覆盖默认值
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-WorkTrace_Root_2026!}
+      # 默认数据库名（与 server/db/*.sql 中各分片 `USE work_system` 一致）
+      MYSQL_DATABASE: work_system
     command:
-      # 与 server/db/01_user_session.sql 头部建议的实例参数一致
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
       - --default-time-zone=+08:00
@@ -18,12 +26,12 @@ services:
       - --max-connections=200
       - --log-error-verbosity=2
     ports:
-      # 只发布到本机回环；应用连接 127.0.0.1:3306
+      # 仅发布到本机回环：宿主机只依赖 80 端口入口，MySQL 不对外
       - "127.0.0.1:3306:3306"
     volumes:
-      - worktrace-mysql-data:/var/lib/mysql
-      # 初始化脚本按文件名字典序执行：
-      # 00 加载时区表 -> 01..08 项目 DDL -> 09 Docker 账号适配
+      - mysql_data:/var/lib/mysql
+      # 首次启动自动建库建表（按文件名字典序执行）：
+      # 01 分片 CREATE DATABASE work_system → 02..08 建表赋权 → 09 应用账号 wt_app 主机改为 %
       - ./docker/mysql-init/00_load_tz.sh:/docker-entrypoint-initdb.d/00_load_tz.sh:ro
       - ./server/db/01_user_session.sql:/docker-entrypoint-initdb.d/01_user_session.sql:ro
       - ./server/db/02_task.sql:/docker-entrypoint-initdb.d/02_task.sql:ro
@@ -41,6 +49,40 @@ services:
       retries: 20
       start_period: 30s
 
+  # ── 2. 后端（多阶段构建，见 server/Dockerfile）──────────────
+  backend:
+    build: ./server
+    image: worktrace-server:latest
+    container_name: worktrace-server
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      SPRING_PROFILES_ACTIVE: prod
+      # 容器内必须监听 0.0.0.0：application.yml 默认 127.0.0.1，
+      # 否则 Nginx 容器反代不通
+      SERVER_ADDRESS: 0.0.0.0
+      SERVER_PORT: 8080
+      # 数据库连接地址与密码（prod profile 强制要求）：通过环境变量注入
+      SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/work_system?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&useUnicode=true&connectionTimeZone=Asia/Shanghai&forceConnectionTimeZoneToSession=true&rewriteBatchedStatements=true&serverTimezone=Asia/Shanghai"
+      DB_USERNAME: ${DB_USERNAME:-wt_app}
+      DB_PASSWORD: ${DB_PASSWORD:-WorkTrace_App_2026!}
+    ports:
+      # 调试用（可删除）：直接命中后端，如 http://127.0.0.1:8080/api/sys/ping
+      - "127.0.0.1:8080:8080"
+
+  # ── 3. 前端（Node 构建 + Nginx 托管，见 web/Dockerfile）──────
+  frontend:
+    build: ./web
+    image: worktrace-web:latest
+    container_name: worktrace-web
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
 volumes:
-  worktrace-mysql-data:
-    name: worktrace-mysql-data
+  mysql_data:

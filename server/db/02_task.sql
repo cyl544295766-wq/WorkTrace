@@ -1,7 +1,7 @@
 -- ============================================================
 -- 02_task.sql  待办任务（C-01 ~ C-04）
 -- ============================================================
-USE worktrace;
+USE work_system;
 
 CREATE TABLE task (
     id             BIGINT       NOT NULL AUTO_INCREMENT,

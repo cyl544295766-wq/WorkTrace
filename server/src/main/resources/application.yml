@@ -5,7 +5,7 @@ spring:
     default: dev
   datasource:
     # 三处时区对齐之一（JDBC 会话）。参数不可省，见 design.md §9.2。
-    url: "jdbc:mysql://127.0.0.1:3306/worktrace?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&useUnicode=true&connectionTimeZone=Asia/Shanghai&forceConnectionTimeZoneToSession=true&rewriteBatchedStatements=true&serverTimezone=Asia/Shanghai"
+    url: "jdbc:mysql://127.0.0.1:3306/work_system?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&useUnicode=true&connectionTimeZone=Asia/Shanghai&forceConnectionTimeZoneToSession=true&rewriteBatchedStatements=true&serverTimezone=Asia/Shanghai"
     username: ${DB_USERNAME:wt_app}
     password: ${DB_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver

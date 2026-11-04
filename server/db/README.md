@@ -90,8 +90,8 @@ SELECT @@version, @@sql_mode, @@lower_case_table_names,
 | `audit_log` | `SELECT, INSERT` |
 | Spring Session 两张表 | `SELECT, INSERT, UPDATE, DELETE` |
 
-与设计文档 §4.8 的差异：MySQL 权限是加法模型，先 `GRANT ... ON worktrace.*` 再
-`REVOKE ... ON worktrace.audit_log` 会报 `ERROR 1147`。因此脚本改为逐表授权，
+与设计文档 §4.8 的差异：MySQL 权限是加法模型，先 `GRANT ... ON work_system.*` 再
+`REVOKE ... ON work_system.audit_log` 会报 `ERROR 1147`。因此脚本改为逐表授权，
 `audit_log` 从不授予 `UPDATE/DELETE`，从而真实满足“审计表只追加”。
 
 验证：
@@ -113,25 +113,25 @@ SHOW GRANTS FOR 'wt_app'@'127.0.0.1';
 -- 1) 不允许出现 TIMESTAMP
 SELECT table_name, column_name, data_type
 FROM information_schema.columns
-WHERE table_schema = 'worktrace' AND data_type = 'timestamp';
+WHERE table_schema = 'work_system' AND data_type = 'timestamp';
 
 -- 2) 所有表字符集/引擎一致
 SELECT table_name, engine, table_collation
 FROM information_schema.tables
-WHERE table_schema = 'worktrace'
+WHERE table_schema = 'work_system'
 ORDER BY table_name;
 
 -- 3) 生成列唯一索引
 SELECT table_name, index_name, column_name
 FROM information_schema.statistics
-WHERE table_schema = 'worktrace'
+WHERE table_schema = 'work_system'
   AND index_name IN ('uk_user_username_active', 'uk_tag_owner_name_active',
                      'uk_te_running', 'uk_export_active');
 
 -- 4) 双指标可空，原值列不可空
 SELECT table_name, column_name, is_nullable, column_type
 FROM information_schema.columns
-WHERE table_schema = 'worktrace'
+WHERE table_schema = 'work_system'
   AND table_name IN ('daily_stat', 'weekly_stat')
 ORDER BY table_name, ordinal_position;
 
@@ -149,7 +149,7 @@ SELECT ROW_COUNT();
 
 以下差异已在脚本内就地说明，最终汇报也会列出：
 
-1. 设计文档 §4.8 的 `GRANT ... ON worktrace.*` + `REVOKE ... audit_log` 在 MySQL 无效，
+1. 设计文档 §4.8 的 `GRANT ... ON work_system.*` + `REVOKE ... audit_log` 在 MySQL 无效，
    本目录改为逐表授权。
 2. `report.sections_json` 的列注释写“四段 `{summary,nextPlan,risk,support}`”，
    而 §6.2 / r2 / r5 的契约只使用 `{summary,nextPlan}`；DDL 保留注释原文，业务实现以契约为准。
