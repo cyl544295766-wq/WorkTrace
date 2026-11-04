@@ -1,6 +1,6 @@
 -- ============================================================
 -- 01_user_session.sql  WorkTrace v1.1 · MySQL 8.0+
--- 库、账号、邀请码、Spring Session 官方表
+-- 库、账号、邀请码
 -- ============================================================
 -- 建议在 my.cnf 中固定（三处时区对齐的第 3 处）
 -- [mysqld]
@@ -59,28 +59,3 @@ CREATE TABLE invite_code (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
   COMMENT='一次性；24h 过期；used_by 非空即已用';
 
--- ------------------------------------------------------------ Spring Session JDBC 官方 MySQL schema
-CREATE TABLE SPRING_SESSION (
-    PRIMARY_ID            CHAR(36) NOT NULL,
-    SESSION_ID            CHAR(36) NOT NULL,
-    CREATION_TIME         BIGINT   NOT NULL,
-    LAST_ACCESS_TIME      BIGINT   NOT NULL,
-    MAX_INACTIVE_INTERVAL INT      NOT NULL,
-    EXPIRY_TIME           BIGINT   NOT NULL,
-    PRINCIPAL_NAME        VARCHAR(100) DEFAULT NULL,
-    PRIMARY KEY (PRIMARY_ID)
-) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
-CREATE UNIQUE INDEX SPRING_SESSION_IX1 ON SPRING_SESSION (SESSION_ID);
-CREATE INDEX SPRING_SESSION_IX2 ON SPRING_SESSION (EXPIRY_TIME);
--- ★ 关键索引：改密后"全端失效"靠 findByPrincipalName 定位全部会话
-CREATE INDEX SPRING_SESSION_IX3 ON SPRING_SESSION (PRINCIPAL_NAME);
-
-CREATE TABLE SPRING_SESSION_ATTRIBUTES (
-    SESSION_PRIMARY_ID CHAR(36)     NOT NULL,
-    ATTRIBUTE_NAME     VARCHAR(200) NOT NULL,
-    ATTRIBUTE_BYTES    BLOB         NOT NULL,
-    PRIMARY KEY (SESSION_PRIMARY_ID, ATTRIBUTE_NAME),
-    CONSTRAINT SPRING_SESSION_ATTRIBUTES_FK FOREIGN KEY (SESSION_PRIMARY_ID)
-        REFERENCES SPRING_SESSION (PRIMARY_ID) ON DELETE CASCADE
-) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

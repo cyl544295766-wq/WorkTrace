@@ -18,8 +18,10 @@ spring:
     store-type: jdbc
     jdbc:
       platform: mysql
-      # 生产/开发都由 db/01_user_session.sql 建表，绝不让应用自动改结构
-      initialize-schema: never
+      # 自动初始化 session schema。用幂等脚本（IF NOT EXISTS），重启安全；
+      # 若改用外置 DDL 管理，则置 never 并保留 db/01_user_session.sql 的建表段。
+      initialize-schema: always
+      schema: classpath:session-schema-mysql.sql
   mvc:
     # 未知路由交给 GlobalExceptionHandler 统一返回 404 响应体
     throw-exception-if-no-handler-found: true
