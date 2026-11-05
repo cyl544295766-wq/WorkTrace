@@ -6,24 +6,20 @@ import axios, {
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 
-/** 后端统一响应结构：{ code, message, data, traceId, ts }，code=0 表示成功 */
+/** 后端统一响应结构：{ code, message, data }，code=200 成功；401 未登录；400/404/500 为各类失败 */
 export interface ApiResult<T = unknown> {
   code: number
   message: string
   data: T
-  traceId?: string
-  ts?: number
 }
 
 /** 业务错误：拦截器抛出，调用方可 catch(e => e.code / e.message) */
 export class ApiError extends Error {
   code: number
-  traceId?: string
-  constructor(code: number, message: string, traceId?: string) {
+  constructor(code: number, message: string) {
     super(message)
     this.name = 'ApiError'
     this.code = code
-    this.traceId = traceId
   }
 }
 
@@ -67,25 +63,23 @@ function handleAuthExpired(message: string) {
   }
 }
 
-const AUTH_BIZ_CODES = new Set([20001, 20002, 20003]) // 会话无/过期/强制下线（2xxxx 段）
-
 request.interceptors.response.use(
   (response) => {
     // 文件流（下载/导出）不拆包，原样返回
     if (response.config.responseType === 'blob') return response
 
     const res = response.data as ApiResult
-    if (res.code === 0) {
+    if (res.code === 200) {
       // 成功：直接把业务 data 抛给调用方
       return res.data as never
     }
-    // 业务失败：统一提示
-    if (AUTH_BIZ_CODES.has(res.code)) {
-      handleAuthExpired(res.message) // 会话过期：清理 + 跳登录
+    // 业务失败：统一提示；401（未登录/会话过期）额外清理登录态并跳登录
+    if (res.code === 401) {
+      handleAuthExpired(res.message)
     } else {
       toastError(res.message)
     }
-    return Promise.reject(new ApiError(res.code, res.message, res.traceId))
+    return Promise.reject(new ApiError(res.code, res.message))
   },
   (error: AxiosError<ApiResult>) => {
     // HTTP 层失败：网络异常 / 超时 / 4xx-5xx
@@ -105,7 +99,6 @@ request.interceptors.response.use(
       new ApiError(
         status ?? -1,
         error.response?.data?.message || error.message,
-        error.response?.headers?.['x-trace-id'],
       ),
     )
   },

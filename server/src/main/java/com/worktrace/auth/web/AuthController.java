@@ -41,7 +41,7 @@ public class AuthController {
                 Wrappers.<SysUser>lambdaQuery().eq(SysUser::getUsername, req.username()));
 
         if (user == null || !matches(req.password(), user.getPassword())) {
-            return Result.fail(20002, "用户名或密码错误");
+            return Result.fail(Result.UNAUTHORIZED, "用户名或密码错误");
         }
 
         LoginUser loginUser = new LoginUser(user.getId(), user.getUsername(), user.getNickname());

@@ -13,8 +13,8 @@ interface LoginResult {
   nickname: string
 }
 
-/** request.ts 认为“会话类”的错误码，其在 /login 页不自动弹提示，此处兜底 */
-const SESSION_CODES = new Set([20001, 20002, 20003])
+/** request.ts 认为“会话类”的错误码（401=未登录/凭据错误），其在 /login 页不自动弹提示，此处兜底 */
+const SESSION_CODES = new Set([401])
 
 const router = useRouter()
 const route = useRoute()

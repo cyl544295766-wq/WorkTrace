@@ -28,7 +28,7 @@ import java.time.LocalDate;
  *
  * <p>所有接口都从 <b>HttpSession</b> 取当前登录用户（{@code LOGIN_USER} → id = user_id），
  * 请求体里没有也不接受 user_id。登录态本身由 {@code LoginInterceptor} 拦截 /api/**（登录除外）保障，
- * 这里再判空一次兜底（未登录返回 20001）。
+ * 这里再判空一次兜底（未登录返回 401）。
  *
  * <ul>
  *   <li>POST   /api/tasks        —— 新增</li>
@@ -57,7 +57,7 @@ public class TaskController {
     public Result<BizTask> create(@Valid @RequestBody TaskCreateReq req, HttpSession session) {
         LoginUser user = currentUser(session);
         if (user == null) {
-            return Result.fail(20001, "未登录或会话已过期");
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
         }
         return Result.ok(taskService.create(user.getId(), req));
     }
@@ -67,7 +67,7 @@ public class TaskController {
     public Result<Void> delete(@PathVariable Long id, HttpSession session) {
         LoginUser user = currentUser(session);
         if (user == null) {
-            return Result.fail(20001, "未登录或会话已过期");
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
         }
         if (!taskService.delete(user.getId(), id)) {
             return Result.fail(404, "任务不存在或无权操作");
@@ -80,7 +80,7 @@ public class TaskController {
     public Result<BizTask> update(@Valid @RequestBody TaskUpdateReq req, HttpSession session) {
         LoginUser user = currentUser(session);
         if (user == null) {
-            return Result.fail(20001, "未登录或会话已过期");
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
         }
         BizTask updated = taskService.update(user.getId(), req);
         if (updated == null) {
@@ -100,7 +100,7 @@ public class TaskController {
             HttpSession session) {
         LoginUser user = currentUser(session);
         if (user == null) {
-            return Result.fail(20001, "未登录或会话已过期");
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
         }
         TaskPageReq query = new TaskPageReq(page, size, status, startDate, endDate);
         return Result.ok(taskService.page(user.getId(), query));
