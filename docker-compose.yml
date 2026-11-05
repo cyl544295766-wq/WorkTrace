@@ -45,6 +45,7 @@ services:
       - ./server/db/08_sys_seed.sql:/docker-entrypoint-initdb.d/08_sys_seed.sql:ro
       - ./docker/mysql-init/09_docker_app_user.sql:/docker-entrypoint-initdb.d/09_docker_app_user.sql:ro
       - ./server/db/10_sys_user.sql:/docker-entrypoint-initdb.d/10_sys_user.sql:ro
+      - ./server/db/11_biz_tables.sql:/docker-entrypoint-initdb.d/11_biz_tables.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
