@@ -71,3 +71,24 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
             ${{ secrets.RESTART_CMD }}
+
+      # 重启 ≠ 起得来：轮询健康端点，失败则流水线标红并带出服务日志
+      - name: Health check on server
+        if: env.SERVER_HOST != ''
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          script: |
+            for i in $(seq 1 15); do
+              if curl -sf -m 3 http://127.0.0.1:8080/actuator/health; then
+                echo " - healthy after ${i} try(ies)"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "backend NOT healthy after 30s"
+            sudo journalctl -u worktrace -n 50 --no-pager
+            exit 1
