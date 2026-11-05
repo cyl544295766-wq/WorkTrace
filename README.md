@@ -2,7 +2,7 @@
 
 个人工作留痕系统。本仓库当前只包含 **T01–T04 工程骨架**：后端骨架、数据库 DDL、前端壳层、统一响应与全局异常。
 
-不包含登录认证、任何业务模块、业务接口、ECharts 报表实现与应用部署脚本。所有页面均为占位页，用于验证路由、布局与主题。数据库统一由 `docker-compose.yml` 管理。
+不包含登录认证、任何业务模块、业务接口与 ECharts 报表实现。所有页面均为占位页，用于验证路由、布局与主题。数据库统一由 `docker-compose.yml` 管理。
 
 ## 技术栈
 
@@ -155,6 +155,15 @@ npm run preview
 ```
 
 `src/auto-imports.d.ts` 与 `src/components.d.ts` 由 Vite 插件自动生成，已加入 `.gitignore`；首次运行 `npm run dev` 或 `npm run build` 后会重新生成。
+
+## 部署
+
+线上部署采用 **CI 只做构建验证 + 本地一键发布** 的模式（与 NewTrevl 相同）：
+
+- 推送代码 → GitHub Actions 自动构建验证（不碰服务器）
+- 上线 → 本机执行 `./deploy/publish.sh`（构建 → 备份 → scp 直传 → md5 校验 → 重启 + 健康检查，失败自动回滚）
+
+完整说明（配置、服务器拓扑、排障速查、历史沿革）见 **[deploy/README.md](deploy/README.md)**。
 
 ## 统一响应
 
