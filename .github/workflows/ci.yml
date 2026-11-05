@@ -1,0 +1,31 @@
+name: CI
+
+# 只做构建验证：编译 + 测试编译 + 打包。
+# 部署不在 CI 内——用本地一键发布 deploy/publish.sh（同国链路快、零外购成本，
+# 服务器凭据只在本地 .deploy.env / ~/.ssh，不进 GitHub）。与 NewTrevl 同款模式。
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-backend:
+    name: 构建后端 (server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+
+      # 跳过测试执行（DB 单测需 MySQL 容器）；测试编译仍会发生，编译错照样红
+      - name: Maven package（编译 + 打包）
+        run: mvn -B -DskipTests -f server/pom.xml package

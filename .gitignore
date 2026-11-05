@@ -25,3 +25,6 @@ server/logs/
 /.env
 *.local
 .env.local
+
+# 本地部署配置（服务器 IP/密钥路径，勿提交）
+deploy/.deploy.env
