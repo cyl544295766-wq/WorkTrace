@@ -32,7 +32,7 @@ services:
       - mysql_data:/var/lib/mysql
       # 首次启动自动建库建表（按文件名字典序执行）：
       # 01 建库 → 01a Spring Session 表 → 02..08 建表赋权 → 09 账号主机改 %
-      #          → 10 sys_user 表与演示数据
+      #          → 10 sys_user 表与演示数据 → 11 biz 表 → 12 裁剪未实现的 14 张表
       - ./docker/mysql-init/00_load_tz.sh:/docker-entrypoint-initdb.d/00_load_tz.sh:ro
       - ./server/db/01_user_session.sql:/docker-entrypoint-initdb.d/01_user_session.sql:ro
       - ./server/db/01a_spring_session.sql:/docker-entrypoint-initdb.d/01a_spring_session.sql:ro
@@ -46,6 +46,7 @@ services:
       - ./docker/mysql-init/09_docker_app_user.sql:/docker-entrypoint-initdb.d/09_docker_app_user.sql:ro
       - ./server/db/10_sys_user.sql:/docker-entrypoint-initdb.d/10_sys_user.sql:ro
       - ./server/db/11_biz_tables.sql:/docker-entrypoint-initdb.d/11_biz_tables.sql:ro
+      - ./server/db/12_drop_unused.sql:/docker-entrypoint-initdb.d/12_drop_unused.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s

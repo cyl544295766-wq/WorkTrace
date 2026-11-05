@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # WorkTrace · 本地一键发布（参考 NewTrevl deploy/publish.sh 模式）
 #
-# 部署唯一入口（GitHub CI 只做构建验证，见 .github/workflows/ci.yml）：构建 → 备份 →
-# 传 jar → md5 校验 → 重启 + 健康检查（失败自动回滚）。从本机执行：
-# 本机在国内、服务器也在国内，35MB jar 走同国链路通常几秒，不产生任何外购费用；
+# 部署唯一入口（仓库无任何流水线，GitHub 只存代码）：构建（后端+前端）→
+# 备份 → 传 jar → md5 校验 → 发布前端静态站 → 重启 + 健康检查（失败自动回滚）。
+# 从本机执行：本机在国内、服务器也在国内，34MB jar 走同国链路通常几秒，不产生任何外购费用；
 # 服务器凭据只在本地 deploy/.deploy.env / ~/.ssh，不进 GitHub。
 #
 # 用法：
@@ -51,14 +51,21 @@ if [ "$BUILD_ONLY" = "0" ] && [ -z "${DEPLOY_HOST:-}" ]; then
   die "缺 DEPLOY_HOST（服务器 IP）。示例：DEPLOY_HOST=1.2.3.4 ./deploy/publish.sh；或写入 deploy/.deploy.env"
 fi
 
-# ---- 1. 构建（与 CI 相同口径：编译 + 测试编译 + 打包；DB 单测需容器故跳过执行） ----
-log "1/5 构建后端 jar"
+# ---- 1. 构建（后端与 CI 同口径；前端 npm 构建。DB 单测需容器故跳过执行） ----
+log "1/6 构建后端 jar + 前端 dist"
 cd "$ROOT_DIR/server"
 "$MAVEN_BIN" -B -DskipTests package
-JAR="$(ls target/*.jar | head -1)"
+# 绝对路径：后面步骤会 cd 到 web/，相对路径会让 scp 找不到 jar
+JAR="$(ls "$ROOT_DIR"/server/target/*.jar | head -1)"
 [ -f "$JAR" ] || die "构建产物缺失"
 LOCAL_MD5="$(md5sum "$JAR" | cut -d' ' -f1)"
-echo "构建完成：$JAR（$(du -h "$JAR" | cut -f1)，md5 $LOCAL_MD5）"
+echo "后端：$JAR（$(du -h "$JAR" | cut -f1)，md5 $LOCAL_MD5）"
+
+command -v npm > /dev/null 2>&1 || die "npm 不在 PATH（前端构建需要 Node.js）"
+cd "$ROOT_DIR/web"
+npm run build
+[ -f dist/index.html ] || die "前端构建产物 dist/index.html 缺失"
+echo "前端：web/dist（$(du -sh dist | cut -f1)）"
 
 if [ "$BUILD_ONLY" = "1" ]; then
   log "仅构建模式，结束"
@@ -71,7 +78,7 @@ SSH_CMD=(ssh -i "$SSH_KEY" -p "$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new
 SCP_CMD=(scp -i "$SSH_KEY" -P "$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new)
 
 # ---- 2. 备份服务器现有版本（保留最近 3 份） ----
-log "2/5 备份服务器现有版本"
+log "2/6 备份服务器现有版本"
 "${SSH_CMD[@]}" "
   mkdir -p $REMOTE_DIR/backups
   TS=\$(date +%Y%m%d%H%M%S)
@@ -80,19 +87,30 @@ log "2/5 备份服务器现有版本"
   ls -1t $REMOTE_DIR/backups/ | head -3"
 
 # ---- 3. 直传 jar（先 .new 再 mv 原子替换；正在运行的旧进程持旧 inode 不受影响） ----
-log "3/5 上传 jar（scp 直传 + 原子替换）"
+log "3/6 上传 jar（scp 直传 + 原子替换）"
 "${SCP_CMD[@]}" "$JAR" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/app.jar.new"
 "${SSH_CMD[@]}" "mv $REMOTE_DIR/app.jar.new $REMOTE_DIR/app.jar"
 
 # ---- 4. md5 校验（防“传了但没生效”） ----
-log "4/5 校验落盘 jar"
+log "4/6 校验落盘 jar"
 REMOTE_MD5="$("${SSH_CMD[@]}" "md5sum $REMOTE_DIR/app.jar | cut -d' ' -f1")"
 echo "本机: $LOCAL_MD5"
 echo "服务器: $REMOTE_MD5"
 [ "$LOCAL_MD5" = "$REMOTE_MD5" ] || die "md5 不一致，中止（jar 未就位？）"
 
-# ---- 5. 重启 + 健康检查（失败自动回滚） ----
-log "5/5 重启服务 + 健康检查"
+# ---- 5. 发布前端静态站（tar + 服务器端 rsync --delete，nginx :8081 服务） ----
+log "5/6 发布前端静态站点"
+tar czf /tmp/worktrace-web.tar.gz -C "$ROOT_DIR/web/dist" .
+"${SCP_CMD[@]}" /tmp/worktrace-web.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
+"${SSH_CMD[@]}" 'set -e
+  rm -rf /tmp/wt-web-new && mkdir -p /tmp/wt-web-new
+  tar xzf /tmp/worktrace-web.tar.gz -C /tmp/wt-web-new
+  sudo mkdir -p /var/www/worktrace && sudo chown ubuntu:ubuntu /var/www/worktrace
+  rsync -a --delete /tmp/wt-web-new/ /var/www/worktrace/'
+rm -f /tmp/worktrace-web.tar.gz
+
+# ---- 6. 重启 + 健康检查（失败自动回滚） ----
+log "6/6 重启服务 + 健康检查"
 "${SSH_CMD[@]}" "
   sudo systemctl restart $SERVICE
   ok=0
@@ -109,4 +127,4 @@ log "5/5 重启服务 + 健康检查"
   sudo systemctl restart $SERVICE
   exit 1"
 
-log "发布完成：worktrace 服务已更新并通过健康检查（后端 127.0.0.1:8080，外网入口尚未配置）"
+log "发布完成：后端已重启并通过健康检查；前端已发布。外网入口 http://${DEPLOY_HOST}:8081/ （需腾讯云安全组放行 TCP:8081）"

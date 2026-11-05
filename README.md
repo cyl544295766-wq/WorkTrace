@@ -158,10 +158,10 @@ npm run preview
 
 ## 部署
 
-线上部署采用 **CI 只做构建验证 + 本地一键发布** 的模式（与 NewTrevl 相同）：
+线上部署采用**本地一键发布**的模式（与 NewTrevl 相同，GitHub 仓库只存代码、无任何流水线）：
 
-- 推送代码 → GitHub Actions 自动构建验证（不碰服务器）
-- 上线 → 本机执行 `./deploy/publish.sh`（构建 → 备份 → scp 直传 → md5 校验 → 重启 + 健康检查，失败自动回滚）
+- 上线 → 本机执行 `./deploy/publish.sh`（构建后端+前端 → 备份 → scp 直传 → md5 校验 → 发前端 → 重启 + 健康检查，失败自动回滚）
+- 自检 → `./deploy/publish.sh --build-only`（只编译打包，替代已删除的 CI）
 
 完整说明（配置、服务器拓扑、排障速查、历史沿革）见 **[deploy/README.md](deploy/README.md)**。
 
