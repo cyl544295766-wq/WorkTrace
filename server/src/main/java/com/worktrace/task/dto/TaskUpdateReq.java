@@ -25,6 +25,11 @@ public record TaskUpdateReq(
         @Max(value = 3, message = "状态取值 0-3")
         Integer status,
 
+        /** 进度 0-100（叶子任务手动维护；空=不修改/默认 0） */
+        @Min(value = 0, message = "进度取值 0-100")
+        @Max(value = 100, message = "进度取值 0-100")
+        Integer progress,
+
         @Min(value = 1, message = "优先级取值 1-3")
         @Max(value = 3, message = "优先级取值 1-3")
         Integer priority,

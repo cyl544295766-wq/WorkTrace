@@ -39,6 +39,9 @@ public class BizTask {
     /** 0待办 1进行中 2已完成 3已延期 */
     private Integer status;
 
+    /** 进度 0-100：叶子任务用户手动维护；有子任务时前端按子任务进度均值展示（此处仅存快照） */
+    private Integer progress;
+
     /** 1低 2中 3高 */
     private Integer priority;
 
@@ -53,6 +56,9 @@ public class BizTask {
 
     /** 业务分类 category：FEATURE/BUG/DATA/JOINT/DOC/OPS/OTHER（与前端选项一一对应） */
     private String category;
+
+    /** 完成时间 finish_time：状态首次变为已完成(2)时由 Service 派生，移出已完成时清空（非用户直填） */
+    private LocalDateTime finishTime;
 
     private LocalDateTime createTime;
 

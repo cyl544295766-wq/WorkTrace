@@ -1,6 +1,7 @@
 package com.worktrace.task.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.worktrace.common.api.Result;
@@ -9,6 +10,8 @@ import com.worktrace.task.dto.TaskCreateReq;
 import com.worktrace.task.dto.TaskPageReq;
 import com.worktrace.task.dto.TaskUpdateReq;
 import com.worktrace.task.entity.BizTask;
+import com.worktrace.task.entity.BizTaskLog;
+import com.worktrace.task.mapper.BizTaskLogMapper;
 import com.worktrace.task.mapper.BizTaskMapper;
 import org.springframework.stereotype.Service;
 
@@ -33,9 +36,11 @@ public class TaskService {
     private static final int DEFAULT_PRIORITY = 2; // 中
 
     private final BizTaskMapper bizTaskMapper;
+    private final BizTaskLogMapper bizTaskLogMapper;
 
-    public TaskService(BizTaskMapper bizTaskMapper) {
+    public TaskService(BizTaskMapper bizTaskMapper, BizTaskLogMapper bizTaskLogMapper) {
         this.bizTaskMapper = bizTaskMapper;
+        this.bizTaskLogMapper = bizTaskLogMapper;
     }
 
     /** 默认分类（前端未传时） */
@@ -49,6 +54,9 @@ public class TaskService {
         task.setContent(req.content());
         task.setStatus(req.status() == null ? DEFAULT_STATUS : req.status());
         task.setPriority(req.priority() == null ? DEFAULT_PRIORITY : req.priority());
+        // 进度默认 0；直接建成已完成 → 100（与 update 的状态联动规则一致）
+        task.setProgress(req.status() != null && req.status() == 2
+                ? 100 : (req.progress() == null ? 0 : req.progress()));
         task.setPlanDate(req.planDate());
         task.setActualHours(req.actualHours());
         task.setCategory(req.category() == null || req.category().isBlank()
@@ -98,22 +106,43 @@ public class TaskService {
                 }
             }
         }
-        return bizTaskMapper.delete(Wrappers.<BizTask>lambdaQuery()
+        boolean removed = bizTaskMapper.delete(Wrappers.<BizTask>lambdaQuery()
                 .eq(BizTask::getUserId, userId)
                 .in(BizTask::getId, ids)) > 0;
+        if (removed) {
+            // 级联删除任务的跟进记录（ids 已由 user_id 圈定，无需再过滤）
+            bizTaskLogMapper.delete(Wrappers.<BizTaskLog>lambdaQuery()
+                    .in(BizTaskLog::getTaskId, ids));
+        }
+        return removed;
+    }
+
+    /** 按归属查单个任务（供跟进记录等模块校验"任务存在且属于当前用户"） */
+    public BizTask getOwned(Long userId, Long id) {
+        return bizTaskMapper.selectOne(wrapsOwned(userId).eq(BizTask::getId, id));
     }
 
     /**
      * 部分更新（仅本人）。DTO 为空的字段不写入（MP 按 NOT_NULL 生成 SET）。
      *
+     * <p>完成时间 finish_time 为派生字段：状态首次变为已完成(2)时打当前时间戳
+     * （重复保存已完成不刷新）；移出已完成时清空。清空 null 须走 UpdateWrapper
+     * 的 {@code set}（实体 null 字段会被 MP 的 NOT_NULL 策略忽略）。
+     *
      * @return 更新后的任务；null = 任务不存在或非本人
      */
     public BizTask update(Long userId, TaskUpdateReq req) {
+        BizTask old = bizTaskMapper.selectOne(wrapsOwned(userId).eq(BizTask::getId, req.id()));
+        if (old == null) {
+            return null;
+        }
+
         BizTask upd = new BizTask();
         upd.setTitle(req.title());
         upd.setContent(req.content());
         upd.setStatus(req.status());
         upd.setPriority(req.priority());
+        upd.setProgress(req.progress());
         upd.setPlanDate(req.planDate());
         upd.setActualHours(req.actualHours());
         if (req.category() != null && !req.category().isBlank()) {
@@ -121,7 +150,21 @@ public class TaskService {
         }
         upd.setUpdateTime(LocalDateTime.now());
 
-        int affected = bizTaskMapper.update(upd, wrapsOwned(userId).eq(BizTask::getId, req.id()));
+        // 完成时间派生：以请求后的最终状态为准；状态→已完成时进度强制 100（联动）
+        int newStatus = req.status() != null ? req.status() : old.getStatus();
+        if (newStatus == 2) {
+            upd.setProgress(100); // 勾完成 → 进度拉满
+        }
+        LambdaUpdateWrapper<BizTask> wrapper = Wrappers.<BizTask>lambdaUpdate()
+                .eq(BizTask::getUserId, userId)
+                .eq(BizTask::getId, req.id());
+        if (newStatus == 2 && old.getStatus() != 2) {
+            upd.setFinishTime(LocalDateTime.now()); // 待办/进行中 → 已完成：打戳
+        } else if (newStatus != 2 && old.getFinishTime() != null) {
+            wrapper.set(BizTask::getFinishTime, null); // 移出已完成：清空
+        }
+
+        int affected = bizTaskMapper.update(upd, wrapper);
         if (affected == 0) {
             return null;
         }
