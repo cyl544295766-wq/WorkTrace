@@ -51,9 +51,9 @@ async function handleLogin(): Promise<void> {
       roles: [],
     })
     ElMessage.success(`欢迎，${user.nickname || user.username}`)
-    // 回跳到守卫记录的原路径（?redirect=），否则默认 /tasks
+    // 回跳到守卫记录的原路径（?redirect=），否则默认进首页
     const redirect = route.query.redirect
-    await router.push(typeof redirect === 'string' && redirect.startsWith('/') ? redirect : '/tasks')
+    await router.push(typeof redirect === 'string' && redirect.startsWith('/') ? redirect : '/')
   } catch (e) {
     // 会话/凭据类错误 request.ts 在登录页不弹；其余错误它已 toast，避免重复
     if (e instanceof ApiError && SESSION_CODES.has(e.code)) {

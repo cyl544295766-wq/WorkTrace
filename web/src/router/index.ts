@@ -8,7 +8,12 @@ import { useUserStore } from '@/stores/user'
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    { path: '/', redirect: '/tasks' },
+    {
+      path: '/',
+      name: 'home',
+      component: () => import('@/views/Home.vue'),
+      meta: { title: '首页' },
+    },
     {
       path: '/login',
       name: 'login',
@@ -27,14 +32,14 @@ const router = createRouter({
       component: () => import('@/views/ReportGenerator.vue'),
       meta: { title: 'AI 报告生成' },
     },
-    { path: '/:pathMatch(.*)*', redirect: '/tasks' },
+    { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
 
 /**
  * 认证守卫（登录态联动）：
- * - 未登录访问任务/报告页 → 跳 /login?redirect=原路径
- * - 已登录访问 /login     → 回到 redirect 或 /tasks
+ * - 未登录访问首页/任务/报告页 → 跳 /login?redirect=原路径
+ * - 已登录访问 /login     → 回到 redirect 或首页
  * 登录态来自 Pinia user store（localStorage 持久化，配合 HttpOnly Cookie 会话）。
  */
 router.beforeEach((to) => {
@@ -43,7 +48,7 @@ router.beforeEach((to) => {
   if (to.name === 'login') {
     if (loggedIn) {
       const redirect = to.query.redirect
-      return typeof redirect === 'string' && redirect.startsWith('/') ? redirect : { name: 'tasks' }
+      return typeof redirect === 'string' && redirect.startsWith('/') ? redirect : { name: 'home' }
     }
     return true
   }

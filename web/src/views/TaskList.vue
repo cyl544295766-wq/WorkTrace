@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
-import { Delete, Memo, Plus, Refresh } from '@element-plus/icons-vue'
+import { Delete, Filter, Memo, Plus, Refresh, Search, Star, StarFilled } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { httpDelete, httpGet, httpPost, httpPut } from '@/api/request'
 
-type TaskStatus = 'todo' | 'doing' | 'done'
+type TaskStatus = 'todo' | 'doing' | 'done' | 'delayed'
 type TaskPriority = 'low' | 'medium' | 'high'
 
 /** 任务业务类型可选项（as const + 派生 value 类型，避免退化成 string） */
@@ -24,13 +24,15 @@ type TaskCategory = (typeof TASK_CATEGORY_OPTIONS)[number]['value']
 interface Task {
   id: number
   title: string
-  category: TaskCategory
+  /** 已知枚举值（FEATURE/…/OTHER）或用户自定义文本（如"评审"）——后端存自由字符串 */
+  category: string
   status: TaskStatus
   priority: TaskPriority
   progress: number // 0-100：叶子任务手动维护；父任务展示时按子任务均值派生
   planDate: string // YYYY-MM-DD
   hours: number
   parentId: number | null // NULL=顶层大任务（组树用）
+  isKey: number // 重点标记 1=重点（首页「重点任务」卡） 0=普通
   finishTime: string // 完成时间（后端派生），'' = 未完成
   children: Task[]
 }
@@ -49,11 +51,17 @@ const PRIORITY_OPTIONS: { value: TaskPriority; label: string }[] = [
   { value: 'medium', label: '中' },
   { value: 'high', label: '高' },
 ]
-const STATUS_LABEL: Record<TaskStatus, string> = { todo: '待办', doing: '进行中', done: '已完成' }
-const STATUS_TYPE: Record<TaskStatus, 'info' | 'warning' | 'success'> = {
-  todo: 'info',
-  doing: 'warning',
+const STATUS_LABEL: Record<TaskStatus, string> = {
+  todo: '待处理',
+  doing: '进行中',
+  done: '已完成',
+  delayed: '已逾期',
+}
+const STATUS_TYPE: Record<TaskStatus, 'warning' | 'primary' | 'success' | 'danger'> = {
+  todo: 'warning',
+  doing: 'primary',
   done: 'success',
+  delayed: 'danger',
 }
 const PRIORITY_LABEL: Record<TaskPriority, string> = { low: '低', medium: '中', high: '高' }
 const PRIORITY_TYPE: Record<TaskPriority, 'info' | 'warning' | 'danger'> = {
@@ -64,14 +72,25 @@ const PRIORITY_TYPE: Record<TaskPriority, 'info' | 'warning' | 'danger'> = {
 const CATEGORY_LABEL: Record<TaskCategory, string> = Object.fromEntries(
   TASK_CATEGORY_OPTIONS.map((o) => [o.value, o.label]),
 ) as Record<TaskCategory, string>
-const CATEGORY_TYPE: Record<TaskCategory, 'primary' | 'success' | 'warning' | 'danger' | 'info'> = {
+const CATEGORY_TYPE: Record<TaskCategory, 'primary' | 'success'> = {
   FEATURE: 'primary',
-  BUG: 'danger',
-  DATA: 'warning',
+  BUG: 'success',
+  DATA: 'primary',
   JOINT: 'success',
-  DOC: 'info',
-  OPS: 'warning',
-  OTHER: 'info',
+  DOC: 'primary',
+  OPS: 'success',
+  OTHER: 'primary',
+}
+
+/* ── 类型显示/编辑辅助：已知枚举走映射，自定义文本原样显示 ── */
+function isKnownCategory(cat: string): boolean {
+  return TASK_CATEGORY_OPTIONS.some((o) => o.value === cat)
+}
+function categoryLabel(cat: string): string {
+  return (CATEGORY_LABEL as Record<string, string>)[cat] ?? cat
+}
+function categoryType(cat: string): 'primary' | 'success' {
+  return (CATEGORY_TYPE as Record<string, 'primary' | 'success'>)[cat] ?? 'success'
 }
 
 /* ── 跟进记录类型（与后端 TaskLogService.ALLOWED_TYPES 对齐） ── */
@@ -122,27 +141,30 @@ interface ApiTask {
   actualHours: number | null
   parentId: number | null
   category: string | null
+  isKey: number | null // 重点标记 1=重点 0=普通
   finishTime: string | null // ISO LocalDateTime，null = 未完成
 }
 
-const STATUS_TO_API: Record<TaskStatus, number> = { todo: 0, doing: 1, done: 2 }
+const STATUS_TO_API: Record<TaskStatus, number> = { todo: 0, doing: 1, done: 2, delayed: 3 }
 const PRIORITY_TO_API: Record<TaskPriority, number> = { low: 1, medium: 2, high: 3 }
 
 /** 后端行 → 视图模型（后端 3=已延期 前端暂无该展示态，归入待办；UI 也不会产生 3） */
 function fromApi(r: ApiTask): Task {
-  const status: TaskStatus = r.status === 1 ? 'doing' : r.status === 2 ? 'done' : 'todo'
+  const status: TaskStatus =
+    r.status === 1 ? 'doing' : r.status === 2 ? 'done' : r.status === 3 ? 'delayed' : 'todo'
   const priority: TaskPriority = r.priority === 1 ? 'low' : r.priority === 3 ? 'high' : 'medium'
-  const known = TASK_CATEGORY_OPTIONS.some((o) => o.value === r.category)
   return {
     id: r.id,
     title: r.title,
-    category: known ? (r.category as TaskCategory) : 'OTHER',
+    // 原样透传：已知枚举与自定义文本都保留（映射成 OTHER 会在下次回写时吞掉自定义值）
+    category: r.category || 'OTHER',
     status,
     priority,
     progress: r.progress ?? 0,
     planDate: r.planDate ?? '',
     hours: r.actualHours ?? 0,
     parentId: r.parentId,
+    isKey: r.isKey ?? 0,
     finishTime: r.finishTime ?? '',
     children: [],
   }
@@ -155,7 +177,7 @@ function fmtTime(s: string): string {
 
 /** 可编辑字段序列化——快照 diff 用：任一字段变化即该行需回写 */
 function serialize(t: Task): string {
-  return [t.title, t.category, t.status, t.priority, t.progress, t.planDate, t.hours].join('')
+  return [t.title, t.category, t.status, t.priority, t.progress, t.planDate, t.hours, t.isKey].join('')
 }
 function snapshot(): Map<number, string> {
   const m = new Map<number, string>()
@@ -194,6 +216,7 @@ async function persistDiff(before: Map<number, string>): Promise<void> {
           progress: t.progress,
           planDate: t.planDate || null,
           actualHours: t.hours,
+          isKey: t.isKey,
         })
         // 完成时间由后端派生（状态→已完成打戳/移出清空），回写本地视图即时可见
         t.finishTime = upd?.finishTime ?? ''
@@ -264,6 +287,81 @@ const statSummary = computed(() => {
   return { total, sub, done }
 })
 
+/* ── 统计卡片 / 状态 Tab / 搜索：纯展示层派生，不改动任何业务逻辑 ── */
+
+/** 四张统计卡（全部/进行中/已完成/待处理），口径与 statSummary 一致 */
+const statCards = computed(() => {
+  const counts = { all: 0, doing: 0, done: 0, todo: 0 }
+  const walk = (list: Task[]) =>
+    list.forEach((t) => {
+      counts.all += 1
+      if (t.status === 'doing') counts.doing += 1
+      else if (t.status === 'done') counts.done += 1
+      else counts.todo += 1
+      walk(t.children)
+    })
+  walk(filteredTasks.value)
+  return [
+    { label: '全部任务', value: counts.all, color: 'blue', hint: `含 ${statSummary.value.sub} 个子任务` },
+    { label: '进行中', value: counts.doing, color: 'teal', hint: '正在推进' },
+    { label: '已完成', value: counts.done, color: 'green', hint: '累计完成' },
+    { label: '待处理', value: counts.todo, color: 'orange', hint: '需要关注' },
+  ]
+})
+
+/** 状态 Tab 计数（全节点口径，与统计卡片一致） */
+const tabCounts = computed(() => {
+  const c = { all: 0, todo: 0, doing: 0, done: 0, delayed: 0 }
+  const walk = (list: Task[]) =>
+    list.forEach((t) => {
+      c.all += 1
+      if (t.status === 'doing') c.doing += 1
+      else if (t.status === 'done') c.done += 1
+      else if (t.status === 'delayed') c.delayed += 1
+      else c.todo += 1
+      walk(t.children)
+    })
+  walk(tasks.value)
+  return c
+})
+
+/** Tab 定义（value 即现有 statusFilter 取值，行为零变化） */
+const TAB_DEFS = [
+  { value: '', label: '全部', key: 'all' },
+  { value: 'todo', label: '待处理', key: 'todo' },
+  { value: 'doing', label: '进行中', key: 'doing' },
+  { value: 'done', label: '已完成', key: 'done' },
+  { value: 'delayed', label: '已逾期', key: 'delayed' },
+] as const
+
+/** 搜索（纯展示过滤）：标题命中，或任一子任务标题命中（保持父节点可见） */
+const searchText = ref('')
+const visibleTasks = computed(() => {
+  const q = searchText.value.trim().toLowerCase()
+  if (!q) return filteredTasks.value
+  const hit = (t: Task): boolean =>
+    (t.title ?? '').toLowerCase().includes(q) || t.children.some(hit)
+  return filteredTasks.value.filter(hit)
+})
+
+/** 列表右上「筛选」按钮：滚回筛选卡并聚焦首个控件（不隐藏任何字段） */
+function jumpToFilter(): void {
+  const el = document.querySelector('.filter-card')
+  el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+/* ── 分页（纯展示层切片）：顶层任务分页，子任务随父行保留 ── */
+const page = ref(1)
+const pageSize = ref(10)
+const pagedTasks = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return visibleTasks.value.slice(start, start + pageSize.value)
+})
+// 筛选/搜索变化时回到第一页（避免停留在空页）
+watch([statusFilter, dateRange, searchText], () => {
+  page.value = 1
+})
+
 /** 父任务已完成子任务数（进度徽标用） */
 function doneCount(t: Task): number {
   return t.children.filter((c) => c.status === 'done').length
@@ -275,9 +373,9 @@ function progressOf(t: Task): number {
   return Math.round(t.children.reduce((s, c) => s + progressOf(c), 0) / t.children.length)
 }
 
-/** 进度条颜色：进行中品牌青，完成转成功绿 */
+/** 进度条颜色：青绿（规范色），完成转成功绿 */
 function progressColor(pct: number): string {
-  return pct >= 100 ? 'var(--el-color-success)' : '#1FB6A6'
+  return pct >= 100 ? '#22C55E' : '#13B8A6'
 }
 
 /* ── 叶子任务进度滑块：拖动中本地预览，松手一次性回写（含状态联动） ──
@@ -394,6 +492,14 @@ async function toggleDone(task: Task, done: boolean): Promise<void> {
   await persistDiff(before) // 叶子与被派生的父级一并回写
   ElMessage.success(done ? '已标记为完成' : '已标记为未完成')
 }
+
+/** 重点标记切换：首页「重点任务」卡的数据源（走快照 diff 持久化） */
+async function toggleKey(row: Task): Promise<void> {
+  const before = snapshot()
+  row.isKey = row.isKey === 1 ? 0 : 1
+  await persistDiff(before)
+  ElMessage.success(row.isKey === 1 ? '已设为重点，首页可见' : '已取消重点')
+}
 function findTask(id: number): Task | undefined {
   const walk = (list: Task[]): Task | undefined => {
     for (const t of list) {
@@ -422,6 +528,9 @@ function onCurrentChange(row: Task | null): void {
 /* ── 内联编辑：点击单元格直接修改 ── */
 const editing = ref<{ id: number; field: TaskField } | null>(null)
 const titleDraft = ref('')
+/** 类型编辑子态：false=下拉选已知类型；true=自定义输入框（选“其他”进入） */
+const categoryInputMode = ref(false)
+const categoryDraft = ref('')
 
 function isEditing(row: Task, field: TaskField): boolean {
   return editing.value?.id === row.id && editing.value.field === field
@@ -430,6 +539,34 @@ function startEdit(row: Task, field: TaskField): void {
   if (editing.value?.id === row.id && editing.value.field === field) return
   editing.value = { id: row.id, field }
   if (field === 'title') titleDraft.value = String(row.title ?? '')
+  if (field === 'category') {
+    // 已知类型 → 下拉；纯“其他”或自定义文本 → 直接进输入框（自定义可就地改）
+    categoryInputMode.value = !(isKnownCategory(row.category) && row.category !== 'OTHER')
+    categoryDraft.value = categoryInputMode.value ? row.category : ''
+  }
+}
+
+/** 下拉选类型：选“其他”转入自定义输入（预填原自定义文本便于修改），其余直接提交 */
+function onCategoryPick(row: Task, v: unknown): void {
+  const value = String(v ?? '')
+  if (value === 'OTHER') {
+    categoryInputMode.value = true
+    categoryDraft.value = isKnownCategory(row.category) ? '' : row.category
+    return
+  }
+  if (value) void commitField(row, 'category', value)
+}
+/** 输入框提交：空值回落为“其他”；enter 与 blur 连发靠 mode 守卫防重 */
+async function commitCategoryCustom(row: Task): Promise<void> {
+  if (!categoryInputMode.value) return
+  const value = categoryDraft.value.trim() || 'OTHER'
+  categoryInputMode.value = false
+  await commitField(row, 'category', value)
+}
+/** 输入框 → 返回下拉（mousedown.prevent 挡掉 blur 提交，取消修改） */
+function backToCategorySelect(): void {
+  categoryDraft.value = ''
+  categoryInputMode.value = false
 }
 
 /** 把编辑值写回任务字段并回写服务端（value 来自组件事件，在此按字段收窄类型） */
@@ -442,7 +579,8 @@ async function commitField(row: Task, field: TaskField, value: unknown): Promise
       break
     }
     case 'category':
-      row.category = value as TaskCategory
+      // 自由字符串：已知枚举或自定义文本；空值兜底为 OTHER（显示“其他”）
+      row.category = String(value ?? '').trim() || 'OTHER'
       break
     case 'status':
       row.status = value as TaskStatus
@@ -489,6 +627,7 @@ async function addTask(parentId: number | null): Promise<void> {
     planDate: today(), // 默认计划日期 = 今日
     actualHours: 0,
     parentId,
+    isKey: 0,
   }).catch(() => null)
   if (!created) return // 失败已由 request.ts 弹错
 
@@ -557,13 +696,12 @@ async function handleDelete(row: Task): Promise<void> {
         </p>
       </div>
       <div class="page-header__actions">
-        <el-button size="large" text @click="goReport">AI 生成报告</el-button>
-        <el-button type="primary" :icon="Plus" size="large" @click="addTask(null)">新增任务</el-button>
+        <el-button size="large" class="btn-ghost" @click="goReport">AI 生成报告</el-button>
+        <el-button size="large" class="btn-accent" :icon="Plus" @click="addTask(null)">新增任务</el-button>
         <el-button
-          type="primary"
-          plain
-          :icon="Plus"
           size="large"
+          class="btn-ghost"
+          :icon="Plus"
           :disabled="selectedId == null"
           @click="addTask(selectedId)"
         >
@@ -597,13 +735,47 @@ async function handleDelete(row: Task): Promise<void> {
           />
         </el-form-item>
         <el-form-item>
-          <el-button :icon="Refresh" @click="resetFilter">重置</el-button>
+          <el-button class="btn-ghost" :icon="Refresh" @click="resetFilter">重置</el-button>
         </el-form-item>
       </el-form>
     </el-card>
 
+    <!-- 任务统计卡片：口径与原统计条一致（基于当前筛选结果的真实数据） -->
+    <section class="stat-row">
+      <div v-for="s in statCards" :key="s.label" class="stat-card">
+        <div class="stat-card__label">{{ s.label }}</div>
+        <div class="stat-card__value" :class="`is-${s.color}`">{{ s.value }}</div>
+        <div class="stat-card__hint">{{ s.hint }}</div>
+      </div>
+    </section>
+
     <!-- 任务树：默认只显示大任务；点击单元格内联编辑 -->
     <el-card v-loading="loading" shadow="never">
+      <div class="list-head">
+        <div class="list-tabs" role="tablist">
+          <button
+            v-for="tab in TAB_DEFS"
+            :key="tab.value"
+            type="button"
+            class="list-tab"
+            :class="{ 'is-active': statusFilter === tab.value }"
+            @click="statusFilter = tab.value"
+          >
+            {{ tab.label }}
+            <span class="list-tab__count">{{ tabCounts[tab.key] }}</span>
+          </button>
+        </div>
+        <div class="list-tools">
+          <el-input
+            v-model="searchText"
+            class="list-search"
+            placeholder="搜索任务标题"
+            :prefix-icon="Search"
+            clearable
+          />
+          <el-button class="btn-ghost" :icon="Filter" @click="jumpToFilter">筛选</el-button>
+        </div>
+      </div>
       <div class="table-meta">
         共 <span class="table-meta__num">{{ statSummary.total }}</span> 个任务（含
         <span class="table-meta__num">{{ statSummary.sub }}</span> 个子任务）· 已完成
@@ -612,7 +784,7 @@ async function handleDelete(row: Task): Promise<void> {
 
       <el-table
         ref="tableRef"
-        :data="filteredTasks"
+        :data="pagedTasks"
         row-key="id"
         :tree-props="{ children: 'children' }"
         :indent="20"
@@ -649,6 +821,8 @@ async function handleDelete(row: Task): Promise<void> {
               @click="startEdit(row as Task, 'title')"
             >
               <div class="task-title">
+                <!-- 重点星标：「设重点」后显示（首页「重点任务」卡同源数据） -->
+                <el-icon v-if="(row as Task).isKey === 1" class="task-title__star"><StarFilled /></el-icon>
                 <!-- 子任务：层级引导肘线；父任务：状态色条 -->
                 <span v-if="(row as Task).parentId != null" class="task-title__prefix" />
                 <span v-else class="task-title__bar" :class="`is-${row.status}`" />
@@ -668,20 +842,45 @@ async function handleDelete(row: Task): Promise<void> {
           </template>
         </el-table-column>
 
-        <!-- 类型 -->
-        <el-table-column label="类型" width="130" align="center">
+        <!-- 类型：已知类型下拉；选“其他”→ 自定义输入框（可输自定义类型并显示） -->
+        <el-table-column label="类型" width="160" align="center">
           <template #default="{ row }">
+            <el-input
+              v-if="isEditing(row as Task, 'category') && categoryInputMode"
+              v-model="categoryDraft"
+              size="small"
+              maxlength="32"
+              placeholder="输入类型名称"
+              @keyup.enter="commitCategoryCustom(row as Task)"
+              @blur="commitCategoryCustom(row as Task)"
+              @click.stop
+            >
+              <template #append>
+                <el-button @mousedown.prevent @click="backToCategorySelect">选类型</el-button>
+              </template>
+            </el-input>
             <el-select
-              v-if="isEditing(row as Task, 'category')"
+              v-else-if="isEditing(row as Task, 'category')"
               :model-value="row.category"
               size="small"
-              @update:model-value="(v) => commitField(row as Task, 'category', v)"
+              @update:model-value="(v) => onCategoryPick(row as Task, v)"
               @click.stop
             >
               <el-option v-for="o in TASK_CATEGORY_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+              <!-- 当前是自定义文本：合成一项让它可被选中显示（借此可切回已知类型） -->
+              <el-option
+                v-if="row.category && !isKnownCategory(row.category)"
+                :value="row.category"
+                :label="row.category"
+              />
             </el-select>
-            <el-tag v-else class="cell-editable" :type="CATEGORY_TYPE[row.category as TaskCategory]" @click="startEdit(row as Task, 'category')">
-              {{ CATEGORY_LABEL[row.category as TaskCategory] }}
+            <el-tag
+              v-else
+              class="cell-editable"
+              :type="categoryType(row.category)"
+              @click="startEdit(row as Task, 'category')"
+            >
+              {{ categoryLabel(row.category) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -697,6 +896,12 @@ async function handleDelete(row: Task): Promise<void> {
               @click.stop
             >
               <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+              <!-- 当前值不在下拉集中（如已逾期）：合成一项保证能显示、可原样提交 -->
+              <el-option
+                v-if="row.status && !STATUS_OPTIONS.some((o) => o.value === row.status)"
+                :value="row.status"
+                :label="STATUS_LABEL[row.status as TaskStatus]"
+              />
             </el-select>
             <el-tag v-else class="cell-editable" :type="STATUS_TYPE[row.status as TaskStatus]" @click="startEdit(row as Task, 'status')">
               {{ STATUS_LABEL[row.status as TaskStatus] }}
@@ -792,8 +997,17 @@ async function handleDelete(row: Task): Promise<void> {
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="150" align="center" fixed="right">
+        <el-table-column label="操作" width="230" align="center" fixed="right">
           <template #default="{ row }">
+            <el-button
+              link
+              class="btn-key"
+              :class="{ 'is-key': (row as Task).isKey === 1 }"
+              :icon="(row as Task).isKey === 1 ? StarFilled : Star"
+              @click="toggleKey(row as Task)"
+            >
+              {{ (row as Task).isKey === 1 ? '取消重点' : '设重点' }}
+            </el-button>
             <el-button link type="primary" :icon="Memo" @click="openLogs(row as Task)">记录</el-button>
             <el-button link class="btn-delete" :icon="Delete" @click="handleDelete(row as Task)">删除</el-button>
           </template>
@@ -803,6 +1017,19 @@ async function handleDelete(row: Task): Promise<void> {
           <el-empty description="暂无任务，点击右上角「新增任务」创建" :image-size="80" />
         </template>
       </el-table>
+
+      <!-- 分页：顶层任务分页，子任务随父行展开；纯展示切片，不改任何业务数据 -->
+      <div class="pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="visibleTasks.length"
+          :page-sizes="[10, 20, 50]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          size="small"
+        />
+      </div>
     </el-card>
 
     <!-- 跟进记录抽屉：工作留痕时间线 -->
@@ -851,14 +1078,25 @@ async function handleDelete(row: Task): Promise<void> {
 
 <style scoped>
 .task-page {
-  /* 品牌色（C1）：与 Dashboard 统一为青绿色系 */
-  --el-color-primary: #1fb6a6;
-  --el-color-primary-light-3: color-mix(in srgb, #1fb6a6 70%, #fff);
-  --el-color-primary-light-5: color-mix(in srgb, #1fb6a6 50%, #fff);
-  --el-color-primary-light-7: color-mix(in srgb, #1fb6a6 30%, #fff);
-  --el-color-primary-light-8: color-mix(in srgb, #1fb6a6 20%, #fff);
-  --el-color-primary-light-9: color-mix(in srgb, #1fb6a6 10%, #fff);
-  --el-color-primary-dark-2: color-mix(in srgb, #1fb6a6 80%, #000);
+  /* 品牌色板（与首页一致）：品牌蓝 / 主操作青绿 / 白灰底 */
+  --wt-blue: #3988e8;
+  --wt-teal: #13b8a6;
+  --wt-green: #22c55e;
+  --wt-orange: #d99543;
+  --wt-border: #e5eaf0;
+  --wt-text: #25364a;
+  --wt-muted: #8796a8;
+
+  --el-color-primary: #3988e8;
+  --el-color-primary-light-3: color-mix(in srgb, #3988e8 70%, #fff);
+  --el-color-primary-light-5: color-mix(in srgb, #3988e8 50%, #fff);
+  --el-color-primary-light-7: color-mix(in srgb, #3988e8 30%, #fff);
+  --el-color-primary-light-8: color-mix(in srgb, #3988e8 20%, #fff);
+  --el-color-primary-light-9: color-mix(in srgb, #3988e8 10%, #fff);
+  --el-color-primary-dark-2: color-mix(in srgb, #3988e8 80%, #000);
+  /* 表格悬停极浅蓝、行分隔线弱化 */
+  --el-table-row-hover-bg-color: #f2f7ff;
+  --el-table-border-color: #eef1f6;
 
   display: flex;
   flex-direction: column;
@@ -866,7 +1104,7 @@ async function handleDelete(row: Task): Promise<void> {
   padding: 24px;
   min-height: 100vh;
   box-sizing: border-box;
-  background: var(--el-bg-color-page);
+  background: #f2f4f7;
 }
 
 .page-header {
@@ -879,13 +1117,15 @@ async function handleDelete(row: Task): Promise<void> {
 
 .page-header__text h1 {
   margin: 0;
-  font-size: 22px;
-  font-weight: 700;
+  color: var(--wt-text);
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
 }
 
 .page-header__text p {
-  margin: 6px 0 0;
-  color: var(--el-text-color-secondary);
+  margin: 8px 0 0;
+  color: var(--wt-muted);
   font-size: 13px;
 }
 
@@ -899,8 +1139,205 @@ async function handleDelete(row: Task): Promise<void> {
   margin-left: 0;
 }
 
+/* 主操作：青绿实底；次要操作：白底浅边框——统一高度与圆角 */
+.btn-accent {
+  height: 40px;
+  padding: 0 20px;
+  border: 1px solid var(--wt-teal);
+  border-radius: 10px;
+  background: var(--wt-teal);
+  color: #fff;
+  font-weight: 600;
+}
+
+.btn-accent:hover,
+.btn-accent:focus {
+  border-color: #0f9c8c;
+  background: #0f9c8c;
+  color: #fff;
+}
+
+.btn-ghost {
+  height: 40px;
+  padding: 0 20px;
+  border: 1px solid var(--wt-border);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--wt-text);
+  font-weight: 500;
+}
+
+.btn-ghost:hover,
+.btn-ghost:focus {
+  border-color: var(--wt-blue);
+  color: var(--wt-blue);
+}
+
+/* ── 筛选区：独立白卡，控件统一高度/圆角/浅灰描边，聚焦品牌蓝 ── */
 .filter-card {
-  border-radius: 12px;
+  border: 1px solid var(--wt-border);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(37, 54, 74, 0.03);
+}
+
+.filter-card :deep(.el-form-item) {
+  margin: 0 24px 0 0;
+}
+
+.filter-card :deep(.el-form-item__label) {
+  color: var(--wt-muted);
+  font-size: 13px;
+}
+
+.filter-card :deep(.el-input__wrapper),
+.filter-card :deep(.el-select__wrapper) {
+  min-height: 38px;
+  border: 1px solid var(--wt-border);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.filter-card :deep(.el-input__wrapper:hover),
+.filter-card :deep(.el-select__wrapper:hover),
+/* 聚焦品牌蓝描边（EP 聚焦内阴影已被上方 box-shadow:none 收掉，由边框承担反馈） */
+.filter-card :deep(.el-input__wrapper.is-focus),
+.filter-card :deep(.el-select__wrapper.is-focused) {
+  border-color: var(--wt-blue);
+}
+
+/* 统一筛选区控件高度：下拉框 / 日期选择器 / 重置按钮同 38px */
+.filter-card :deep(.el-button) {
+  height: 38px;
+}
+
+/* ── 任务统计卡片 ── */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.stat-card {
+  padding: 16px 20px;
+  border: 1px solid var(--wt-border);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(37, 54, 74, 0.03);
+}
+
+.stat-card__label {
+  color: var(--wt-muted);
+  font-size: 13px;
+}
+
+.stat-card__value {
+  margin: 4px 0;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-card__value.is-blue {
+  color: var(--wt-blue);
+}
+
+.stat-card__value.is-teal {
+  color: var(--wt-teal);
+}
+
+.stat-card__value.is-green {
+  color: var(--wt-green);
+}
+
+.stat-card__value.is-orange {
+  color: var(--wt-orange);
+}
+
+.stat-card__hint {
+  color: var(--wt-muted);
+  font-size: 12px;
+}
+
+/* ── 列表头：状态 Tab（品牌蓝文字 + 底部指示线）+ 右侧搜索/筛选 ── */
+.list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.list-tabs {
+  display: flex;
+  gap: 24px;
+}
+
+.list-tab {
+  position: relative;
+  padding: 8px 2px 10px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: none;
+  color: var(--wt-muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.list-tab:hover {
+  color: var(--wt-blue);
+}
+
+.list-tab.is-active {
+  border-bottom-color: var(--wt-blue);
+  color: var(--wt-blue);
+  font-weight: 600;
+}
+
+.list-tab__count {
+  display: inline-block;
+  min-width: 22px;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #f2f4f7;
+  color: var(--wt-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.list-tab.is-active .list-tab__count {
+  background: var(--el-color-primary-light-9);
+  color: var(--wt-blue);
+}
+
+.list-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.list-search {
+  width: 240px;
+}
+
+.list-search :deep(.el-input__wrapper) {
+  min-height: 38px;
+  border: 1px solid var(--wt-border);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.list-search :deep(.el-input__wrapper:hover),
+.list-search :deep(.el-input__wrapper.is-focus) {
+  border-color: var(--wt-blue);
+}
+
+.list-tools .btn-ghost {
+  height: 38px;
+  padding: 0 14px;
 }
 
 .table-meta {
@@ -1022,13 +1459,30 @@ async function handleDelete(row: Task): Promise<void> {
 
 /* ── 密度与交互细节 ──────────────────────── */
 
-/* 表格密度：行更紧凑，同屏多显内容 */
 :deep(.el-table) {
   font-size: 13px;
 }
 
+/* 表头：浅灰底 + 弱化文字 */
+:deep(.el-table th.el-table__cell) {
+  background: #f7f9fc;
+  color: var(--wt-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 :deep(.el-table .el-table__cell) {
-  padding: 9px 0;
+  padding: 12px 0;
+}
+
+/* 行间浅灰细分隔线 */
+:deep(.el-table td.el-table__cell) {
+  border-bottom: 1px solid #eef1f6;
+}
+
+/* 标题外辅助信息弱化 */
+:deep(.el-table .el-table__cell .cell) {
+  color: var(--wt-text);
 }
 
 /* 展开箭头：更大点击热区 */
@@ -1046,6 +1500,27 @@ async function handleDelete(row: Task): Promise<void> {
 
 :deep(.btn-delete:hover) {
   color: var(--el-color-danger);
+}
+
+/* 重点按钮：默认灰，已标记时橙色星+加粗（与删除的降噪风格一致） */
+:deep(.btn-key) {
+  color: var(--el-text-color-secondary);
+}
+
+:deep(.btn-key:hover) {
+  color: var(--wt-orange);
+}
+
+:deep(.btn-key.is-key) {
+  color: var(--wt-orange);
+  font-weight: 600;
+}
+
+/* 标题前的重点星标 */
+.task-title__star {
+  flex-shrink: 0;
+  margin-right: 4px;
+  color: var(--wt-orange);
 }
 
 /* 标题外层：点击编辑热区 + hover 底色 */
@@ -1073,18 +1548,119 @@ async function handleDelete(row: Task): Promise<void> {
   text-overflow: ellipsis;
 }
 
-/* 进度列：叶子手动滑块（紧凑、按钮不贴格边）/ 父任务派生进度条 */
+/* 进度列：叶子手动滑块（青绿）/ 父任务派生进度条 */
 .progress-slider {
   padding: 0 10px;
+}
+
+/* 进度条使用青绿色（规范色） */
+.progress-slider :deep(.el-slider__bar) {
+  background-color: var(--wt-teal);
+}
+
+.progress-slider :deep(.el-slider__button) {
+  border-color: var(--wt-teal);
 }
 
 .progress-derived {
   padding: 0 4px;
 }
 
-:deep(.el-progress.is-success .el-progress-bar__outer),
+:deep(.el-progress-bar__inner) {
+  background-color: var(--wt-teal);
+}
+
 :deep(.el-progress.is-success .el-progress-bar__inner) {
-  background-color: var(--el-color-success);
+  background-color: var(--wt-green);
+}
+
+/* ── 标签：统一高度/内边距/圆角，轻量化浅底 ── */
+:deep(.el-tag) {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* 标签浅底用规范精确色：浅蓝 / 浅绿 / 浅橙 / 浅红
+   （plain 徽标与带内联 color 的跟进类型标签不在此列，保持原样） */
+:deep(.el-tag--primary:not(.el-tag--plain)) {
+  background: #eaf3ff;
+}
+
+:deep(.el-tag--success:not(.el-tag--plain)) {
+  background: #e8f8f5;
+}
+
+:deep(.el-tag--warning:not(.el-tag--plain)) {
+  background: #fdf3e8;
+}
+
+:deep(.el-tag--danger:not(.el-tag--plain)) {
+  background: #fdecec;
+}
+
+/* ── 分页区：品牌蓝当前页，白底浅灰边框页码 ── */
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.pagination :deep(.el-pagination) {
+  --el-pagination-bg-color: transparent;
+  --el-pagination-button-width: 32px;
+  --el-pagination-button-height: 32px;
+  gap: 6px;
+}
+
+.pagination :deep(.el-pager li) {
+  min-width: 32px;
+  height: 32px;
+  border: 1px solid var(--wt-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--wt-text);
+  font-size: 13px;
+  line-height: 30px;
+}
+
+.pagination :deep(.el-pager li:hover) {
+  border-color: var(--wt-blue);
+  color: var(--wt-blue);
+}
+
+.pagination :deep(.el-pager li.is-active) {
+  border-color: var(--wt-blue);
+  background: var(--wt-blue);
+  color: #fff;
+}
+
+.pagination :deep(.el-pagination button) {
+  border: 1px solid var(--wt-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--wt-text);
+}
+
+.pagination :deep(.el-pagination button:hover) {
+  border-color: var(--wt-blue);
+  color: var(--wt-blue);
+}
+
+.pagination :deep(.el-pagination__total),
+.pagination :deep(.el-pagination__jump),
+.pagination :deep(.el-select__wrapper) {
+  color: var(--wt-muted);
+  font-size: 13px;
+}
+
+.pagination :deep(.el-input__wrapper) {
+  border: 1px solid var(--wt-border);
+  border-radius: 8px;
+  box-shadow: none;
 }
 
 /* ── 跟进记录抽屉 ── */

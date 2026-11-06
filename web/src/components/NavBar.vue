@@ -15,8 +15,9 @@ function logout(): void {
 <template>
   <header class="navbar">
     <div class="navbar__left">
-      <RouterLink class="navbar__brand" to="/tasks">WorkTrace</RouterLink>
+      <RouterLink class="navbar__brand" to="/">WorkTrace</RouterLink>
       <nav class="navbar__menu">
+        <RouterLink class="navbar__item" to="/">首页</RouterLink>
         <RouterLink class="navbar__item" to="/tasks">任务管理</RouterLink>
         <RouterLink class="navbar__item" to="/reports">AI 报告</RouterLink>
       </nav>
@@ -78,9 +79,10 @@ function logout(): void {
   color: var(--el-color-primary);
 }
 
-.navbar__item.router-link-active {
-  background: var(--el-color-primary-light-9);
-  color: var(--el-color-primary);
+/* 必须用 exact：首页 to="/" 会被普通 active 视为所有路由的祖先而常亮 */
+.navbar__item.router-link-exact-active {
+  background: #eaf3ff;
+  color: #3988e8;
   font-weight: 600;
 }
 

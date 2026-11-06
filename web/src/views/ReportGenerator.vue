@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Check, CopyDocument, Download } from '@element-plus/icons-vue'
 
@@ -23,6 +24,13 @@ const REPORT_TYPE_OPTIONS = [
 ] as const
 
 const reportType = ref('DAILY')
+
+// 首页「日报/周报/月报」入口经 /reports?type= 预选类型
+const route = useRoute()
+onMounted(() => {
+  const t = String(route.query.type ?? '')
+  if (REPORT_TYPE_OPTIONS.some((o) => o.value === t)) reportType.value = t
+})
 const dateRange = ref<string[] | null>(null)
 
 const generating = ref(false)
