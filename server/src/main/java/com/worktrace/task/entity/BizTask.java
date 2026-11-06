@@ -48,6 +48,12 @@ public class BizTask {
     /** 实际工时 actual_hours（支持小数） */
     private BigDecimal actualHours;
 
+    /** 父任务 id parent_id；NULL=顶层大任务。删除父任务时 Service 级联删后代 */
+    private Long parentId;
+
+    /** 业务分类 category：FEATURE/BUG/DATA/JOINT/DOC/OPS/OTHER（与前端选项一一对应） */
+    private String category;
+
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;

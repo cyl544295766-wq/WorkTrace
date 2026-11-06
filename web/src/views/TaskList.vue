@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import { Delete, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
+import { httpDelete, httpGet, httpPost, httpPut } from '@/api/request'
 
 type TaskStatus = 'todo' | 'doing' | 'done'
 type TaskPriority = 'low' | 'medium' | 'high'
@@ -28,6 +29,7 @@ interface Task {
   priority: TaskPriority
   planDate: string // YYYY-MM-DD
   hours: number
+  parentId: number | null // NULL=顶层大任务（组树用）
   children: Task[]
 }
 
@@ -75,38 +77,117 @@ function goReport(): void {
   router.push('/reports')
 }
 
-/* ── 数据：本地演示（接入后端接口后换成 httpGet/httpPost） ── */
-const tasks = ref<Task[]>([
-  {
-    id: 1,
-    title: '登录与会话模块上线',
-    category: 'JOINT',
-    status: 'doing',
-    priority: 'high',
-    planDate: '2026-11-04',
-    hours: 4,
-    children: [
-      { id: 11, title: 'AuthController 接口开发', category: 'JOINT', status: 'done', priority: 'high', planDate: '2026-11-03', hours: 2, children: [] },
-      { id: 12, title: '拦截器与会话验证', category: 'JOINT', status: 'done', priority: 'high', planDate: '2026-11-04', hours: 1.5, children: [] },
-      { id: 13, title: '联调缺陷修复', category: 'BUG', status: 'doing', priority: 'medium', planDate: '2026-11-05', hours: 0.5, children: [] },
-    ],
-  },
-  {
-    id: 2,
-    title: 'Docker 单机部署',
-    category: 'OPS',
-    status: 'done',
-    priority: 'medium',
-    planDate: '2026-11-02',
-    hours: 3,
-    children: [
-      { id: 21, title: 'compose 编排', category: 'OPS', status: 'done', priority: 'medium', planDate: '2026-11-02', hours: 2, children: [] },
-      { id: 22, title: '健康检查验证', category: 'OPS', status: 'done', priority: 'low', planDate: '2026-11-02', hours: 1, children: [] },
-    ],
-  },
-  { id: 3, title: '任务列表页开发', category: 'FEATURE', status: 'todo', priority: 'medium', planDate: '2026-11-05', hours: 4, children: [] },
-  { id: 4, title: '数据库备份演练', category: 'DATA', status: 'todo', priority: 'high', planDate: '2026-11-06', hours: 1.5, children: [] },
-])
+/* ── 数据：真接口（GET /tasks/page 拉全量 → 前端按 parentId 组树 → 改动即时回写） ── */
+const tasks = ref<Task[]>([])
+const loading = ref(true)
+
+/** 后端 BizTask 的 JSON 形状（status/priority 数字枚举，日期可空） */
+interface ApiTask {
+  id: number
+  title: string
+  status: number // 0待办 1进行中 2已完成 3已延期
+  priority: number // 1低 2中 3高
+  planDate: string | null // YYYY-MM-DD
+  actualHours: number | null
+  parentId: number | null
+  category: string | null
+}
+
+const STATUS_TO_API: Record<TaskStatus, number> = { todo: 0, doing: 1, done: 2 }
+const PRIORITY_TO_API: Record<TaskPriority, number> = { low: 1, medium: 2, high: 3 }
+
+/** 后端行 → 视图模型（后端 3=已延期 前端暂无该展示态，归入待办；UI 也不会产生 3） */
+function fromApi(r: ApiTask): Task {
+  const status: TaskStatus = r.status === 1 ? 'doing' : r.status === 2 ? 'done' : 'todo'
+  const priority: TaskPriority = r.priority === 1 ? 'low' : r.priority === 3 ? 'high' : 'medium'
+  const known = TASK_CATEGORY_OPTIONS.some((o) => o.value === r.category)
+  return {
+    id: r.id,
+    title: r.title,
+    category: known ? (r.category as TaskCategory) : 'OTHER',
+    status,
+    priority,
+    planDate: r.planDate ?? '',
+    hours: r.actualHours ?? 0,
+    parentId: r.parentId,
+    children: [],
+  }
+}
+
+/** 可编辑字段序列化——快照 diff 用：任一字段变化即该行需回写 */
+function serialize(t: Task): string {
+  return [t.title, t.category, t.status, t.priority, t.planDate, t.hours].join('')
+}
+function snapshot(): Map<number, string> {
+  const m = new Map<number, string>()
+  const walk = (list: Task[]) =>
+    list.forEach((t) => {
+      m.set(t.id, serialize(t))
+      walk(t.children)
+    })
+  walk(tasks.value)
+  return m
+}
+
+/**
+ * 把本地变更回写服务端：只 PUT 快照之后有差异的行
+ * （覆盖内联编辑、勾选级联出的父状态派生、删除后剩余父级的状态漂移）。
+ * 回写失败 → 以服务端为准重建视图（错误 toast 已由 request.ts 统一弹）。
+ */
+async function persistDiff(before: Map<number, string>): Promise<void> {
+  const changed: Task[] = []
+  const walk = (list: Task[]) =>
+    list.forEach((t) => {
+      if (before.get(t.id) !== serialize(t)) changed.push(t)
+      walk(t.children)
+    })
+  walk(tasks.value)
+  if (changed.length === 0) return
+  try {
+    await Promise.all(
+      changed.map((t) =>
+        httpPut('/tasks', {
+          id: t.id,
+          title: t.title,
+          category: t.category,
+          status: STATUS_TO_API[t.status],
+          priority: PRIORITY_TO_API[t.priority],
+          planDate: t.planDate || null,
+          actualHours: t.hours,
+        }),
+      ),
+    )
+  } catch {
+    await loadTasks()
+  }
+}
+
+/** 拉全量组树；parentId 指向缺失父级的行降级为顶层（不丢数据） */
+async function loadTasks(): Promise<void> {
+  loading.value = true
+  try {
+    const page = await httpGet<{ records: ApiTask[]; total: number }>('/tasks/page', {
+      page: 1,
+      size: 500, // 个人任务量级：一次拉全，前端组树/筛选/级联都在内存做
+    })
+    tasks.value = buildTree((page.records ?? []).map(fromApi))
+  } catch {
+    tasks.value = [] // 错误提示由 request.ts 统一处理
+  } finally {
+    loading.value = false
+  }
+}
+function buildTree(items: Task[]): Task[] {
+  const byId = new Map(items.map((t) => [t.id, t]))
+  const roots: Task[] = []
+  for (const t of items) {
+    const parent = t.parentId != null ? byId.get(t.parentId) : undefined
+    if (parent && parent !== t) parent.children.push(t)
+    else roots.push(t)
+  }
+  return roots
+}
+onMounted(loadTasks)
 
 /* ── 顶部筛选：状态 + 日期范围 ── */
 const statusFilter = ref('')
@@ -146,9 +227,11 @@ function setLeaf(t: Task, done: boolean): void {
   }
   for (const c of t.children) setLeaf(c, done)
 }
-function toggleDone(task: Task, done: boolean): void {
+async function toggleDone(task: Task, done: boolean): Promise<void> {
+  const before = snapshot()
   setLeaf(task, done)
   syncParents(tasks.value)
+  await persistDiff(before) // 叶子与被派生的父级一并回写
   ElMessage.success(done ? '已标记为完成' : '已标记为未完成')
 }
 function findTask(id: number): Task | undefined {
@@ -162,7 +245,6 @@ function findTask(id: number): Task | undefined {
   }
   return walk(tasks.value)
 }
-syncParents(tasks.value)
 
 /* ── 行选中（判断"选中大任务 → 加子任务"） ── */
 const tableRef = ref<TableInstance>()
@@ -184,8 +266,9 @@ function startEdit(row: Task, field: TaskField): void {
   if (field === 'title') titleDraft.value = String(row.title ?? '')
 }
 
-/** 把编辑值写回任务字段（value 来自组件事件，在此按字段收窄类型） */
-function commitField(row: Task, field: TaskField, value: unknown): void {
+/** 把编辑值写回任务字段并回写服务端（value 来自组件事件，在此按字段收窄类型） */
+async function commitField(row: Task, field: TaskField, value: unknown): Promise<void> {
+  const before = snapshot()
   switch (field) {
     case 'title': {
       const s = String(value ?? '').trim()
@@ -210,38 +293,39 @@ function commitField(row: Task, field: TaskField, value: unknown): void {
   }
   editing.value = null
   syncParents(tasks.value)
+  await persistDiff(before) // 本行 + 派生父级（如状态改动后父级自动完成）
 }
 
-/* ── 新增：选中大任务 → 加小任务；未选中 → 加大任务 ── */
-function addTask(): void {
+/* ── 新增：选中大任务 → 加小任务；未选中 → 加大任务（先 POST 落库拿真 id） ── */
+async function addTask(): Promise<void> {
   editing.value = null
-  const draft: Task = {
-    id: Date.now(),
-    title: '',
-    category: 'FEATURE',
-    status: 'todo',
-    priority: 'medium',
-    planDate: '',
-    hours: 0,
-    children: [],
-  }
+  const parentId = selectedId.value != null && findTask(selectedId.value) ? selectedId.value : null
 
-  const parentId = selectedId.value
+  const created = await httpPost<ApiTask>('/tasks', {
+    title: '新任务', // @NotBlank 校验；立即进入标题编辑，用户可改
+    category: 'FEATURE',
+    status: 0,
+    priority: 2,
+    planDate: null,
+    actualHours: 0,
+    parentId,
+  }).catch(() => null)
+  if (!created) return // 失败已由 request.ts 弹错
+
+  const draft = fromApi(created)
+  const parent = parentId != null ? findTask(parentId) : undefined
   let target: Task
-  if (parentId != null) {
-    const parent = findTask(parentId)
-    if (parent) {
-      parent.children.push(draft) // 选中任务 → 作为它的子任务
-      target = parent             // 保持选中大任务，便于连续加多个子任务
-    } else {
-      tasks.value.unshift(draft)
-      target = draft
-    }
+  if (parent) {
+    parent.children.unshift(draft)
+    target = parent // 保持选中大任务，便于连续加多个子任务
   } else {
-    tasks.value.unshift(draft) // 未选中 → 顶层大任务
+    tasks.value.unshift(draft)
     target = draft
   }
+  // 新增叶子可能推翻父级已持久化的派生状态 → 快照已含新行，diff 只会回写漂移的父级
+  const before = snapshot()
   syncParents(tasks.value)
+  await persistDiff(before)
 
   selectedId.value = target.id
   tableRef.value?.setCurrentRow(target) // target 一定是顶层行，EP 可选中
@@ -249,28 +333,36 @@ function addTask(): void {
   titleDraft.value = ''
 }
 
-function handleDelete(row: Task): void {
-  ElMessageBox.confirm(`确定删除「${row.title || '未命名任务'}」及其子任务吗？`, '删除任务', {
-    type: 'warning',
-    confirmButtonText: '删除',
-    cancelButtonText: '取消',
-  })
-    .then(() => {
-      const walk = (list: Task[]): boolean => {
-        const i = list.findIndex((t) => t.id === row.id)
-        if (i !== -1) {
-          list.splice(i, 1)
-          return true
-        }
-        return list.some((t) => walk(t.children))
-      }
-      if (walk(tasks.value)) {
-        if (selectedId.value === row.id) selectedId.value = null
-        syncParents(tasks.value)
-        ElMessage.success('已删除')
-      }
+async function handleDelete(row: Task): Promise<void> {
+  try {
+    await ElMessageBox.confirm(`确定删除「${row.title || '未命名任务'}」及其子任务吗？`, '删除任务', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
     })
-    .catch(() => undefined)
+  } catch {
+    return // 取消
+  }
+  try {
+    await httpDelete(`/tasks/${row.id}`) // 后端级联删除全部后代
+  } catch {
+    return // 失败已由 request.ts 弹错，本地视图不动
+  }
+  const before = snapshot()
+  const walk = (list: Task[]): boolean => {
+    const i = list.findIndex((t) => t.id === row.id)
+    if (i !== -1) {
+      list.splice(i, 1)
+      return true
+    }
+    return list.some((t) => walk(t.children))
+  }
+  if (walk(tasks.value)) {
+    if (selectedId.value === row.id) selectedId.value = null
+    syncParents(tasks.value) // 被删节点的父级派生状态可能变化
+    await persistDiff(before)
+    ElMessage.success('已删除')
+  }
 }
 </script>
 
@@ -324,7 +416,7 @@ function handleDelete(row: Task): void {
     </el-card>
 
     <!-- 任务树：默认只显示大任务；点击单元格内联编辑 -->
-    <el-card shadow="never">
+    <el-card v-loading="loading" shadow="never">
       <div class="table-meta">共 {{ filteredTasks.length }} 条</div>
 
       <el-table

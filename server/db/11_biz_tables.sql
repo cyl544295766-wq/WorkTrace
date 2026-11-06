@@ -5,6 +5,13 @@
 -- @TableName 指向的是 biz_task / biz_report。此前这两张表只在开发机
 -- 手工创建，全新环境会缺表——此文件把它们纳入可复现初始化。
 -- 字典序在 09（账号改 '%'）、10（sys_user）之后，GRANT 目标写 'wt_app'@'%'。
+--
+-- 字段演进（注意：CREATE IF NOT EXISTS 对已存在的表不生效）：
+--   2026-11-05 新增 parent_id / category —— 全新库由本文件建出；
+--   存量库（当时已建表的开发机/服务器）用下方同款 ALTER 一次性补齐：
+--   ALTER TABLE biz_task
+--     ADD COLUMN parent_id BIGINT NULL COMMENT '父任务 id（NULL=顶层）' AFTER actual_hours,
+--     ADD COLUMN category  VARCHAR(32) DEFAULT NULL COMMENT 'FEATURE/BUG/DATA/JOINT/DOC/OPS/OTHER' AFTER parent_id;
 -- ============================================================
 
 USE work_system;
@@ -18,11 +25,14 @@ CREATE TABLE IF NOT EXISTS biz_task (
     priority      TINYINT      NOT NULL DEFAULT 2 COMMENT '1低 2中 3高',
     plan_date     DATE         DEFAULT NULL,
     actual_hours  DECIMAL(8,2) DEFAULT NULL,
+    parent_id     BIGINT       DEFAULT NULL COMMENT '父任务 id（NULL=顶层大任务）',
+    category      VARCHAR(32)  DEFAULT NULL COMMENT '业务分类 FEATURE/BUG/DATA/JOINT/DOC/OPS/OTHER',
     create_time   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     update_time   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
     KEY idx_biz_task_user (user_id, status),
-    KEY idx_biz_task_plan (user_id, plan_date)
+    KEY idx_biz_task_plan (user_id, plan_date),
+    KEY idx_biz_task_parent (parent_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
   COMMENT='工作任务';
 

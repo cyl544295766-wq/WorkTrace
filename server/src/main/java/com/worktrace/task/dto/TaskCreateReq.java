@@ -33,6 +33,13 @@ public record TaskCreateReq(
         LocalDate planDate,
 
         /** 实际工时，可空 */
-        BigDecimal actualHours
+        BigDecimal actualHours,
+
+        /** 父任务 id（空=顶层大任务）；非空时校验父任务必须属于当前用户，否则 400 */
+        Long parentId,
+
+        /** 业务分类 FEATURE/BUG/DATA/JOINT/DOC/OPS/OTHER，空则默认 OTHER */
+        @Size(max = 32, message = "分类最长 32 字")
+        String category
 ) {
 }

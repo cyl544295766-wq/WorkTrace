@@ -3,6 +3,7 @@ package com.worktrace.task.dto;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -30,6 +31,10 @@ public record TaskUpdateReq(
 
         LocalDate planDate,
 
-        BigDecimal actualHours
+        BigDecimal actualHours,
+
+        /** 业务分类（空=不修改；层级 parentId 创建后不可变，需换父请删除重建） */
+        @Size(max = 32, message = "分类最长 32 字")
+        String category
 ) {
 }
