@@ -45,6 +45,11 @@ public record TaskCreateReq(
 
         /** 业务分类 FEATURE/BUG/DATA/JOINT/DOC/OPS/OTHER，空则默认 OTHER */
         @Size(max = 32, message = "分类最长 32 字")
-        String category
+        String category,
+
+        /** 重点标记 1=重点 0=普通；空则默认 0 */
+        @Min(value = 0, message = "重点标记取值 0-1")
+        @Max(value = 1, message = "重点标记取值 0-1")
+        Integer isKey
 ) {
 }

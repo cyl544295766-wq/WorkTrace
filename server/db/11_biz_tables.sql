@@ -18,6 +18,9 @@
 --   2026-11-06 新增 progress —— 存量库补齐：
 --   ALTER TABLE biz_task
 --     ADD COLUMN progress INT NOT NULL DEFAULT 0 COMMENT '进度 0-100（叶子任务手动维护）' AFTER status;
+--   2026-11-06 新增 is_key —— 存量库补齐（幂等脚本见 13_task_is_key.sql）：
+--   ALTER TABLE biz_task
+--     ADD COLUMN is_key TINYINT(1) NOT NULL DEFAULT 0 COMMENT '重点标记 1=重点（首页重点任务展示） 0=普通' AFTER category;
 -- ============================================================
 
 USE work_system;
@@ -34,6 +37,7 @@ CREATE TABLE IF NOT EXISTS biz_task (
     actual_hours  DECIMAL(8,2) DEFAULT NULL,
     parent_id     BIGINT       DEFAULT NULL COMMENT '父任务 id（NULL=顶层大任务）',
     category      VARCHAR(32)  DEFAULT NULL COMMENT '业务分类 FEATURE/BUG/DATA/JOINT/DOC/OPS/OTHER',
+    is_key        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '重点标记 1=重点（首页重点任务展示） 0=普通',
     finish_time   DATETIME(3)  DEFAULT NULL COMMENT '完成时间（状态变为已完成时派生，移出已完成时清空）',
     create_time   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     update_time   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),

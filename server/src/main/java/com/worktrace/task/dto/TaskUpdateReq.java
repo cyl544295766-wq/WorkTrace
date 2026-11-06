@@ -40,6 +40,11 @@ public record TaskUpdateReq(
 
         /** 业务分类（空=不修改；层级 parentId 创建后不可变，需换父请删除重建） */
         @Size(max = 32, message = "分类最长 32 字")
-        String category
+        String category,
+
+        /** 重点标记 1=重点 0=普通（空=不修改） */
+        @Min(value = 0, message = "重点标记取值 0-1")
+        @Max(value = 1, message = "重点标记取值 0-1")
+        Integer isKey
 ) {
 }

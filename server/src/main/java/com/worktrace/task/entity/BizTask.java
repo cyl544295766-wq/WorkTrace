@@ -57,6 +57,9 @@ public class BizTask {
     /** 业务分类 category：FEATURE/BUG/DATA/JOINT/DOC/OPS/OTHER（与前端选项一一对应） */
     private String category;
 
+    /** 重点标记 is_key：1=重点（首页「重点任务」卡展示） 0=普通 */
+    private Integer isKey;
+
     /** 完成时间 finish_time：状态首次变为已完成(2)时由 Service 派生，移出已完成时清空（非用户直填） */
     private LocalDateTime finishTime;
 

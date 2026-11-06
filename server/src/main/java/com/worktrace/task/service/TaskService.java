@@ -61,6 +61,7 @@ public class TaskService {
         task.setActualHours(req.actualHours());
         task.setCategory(req.category() == null || req.category().isBlank()
                 ? DEFAULT_CATEGORY : req.category());
+        task.setIsKey(req.isKey() == null ? 0 : req.isKey()); // 重点标记，默认普通
 
         // 层级：父任务必须存在且属于当前用户（防把子任务挂到别人名下）
         if (req.parentId() != null) {
@@ -148,6 +149,7 @@ public class TaskService {
         if (req.category() != null && !req.category().isBlank()) {
             upd.setCategory(req.category());
         }
+        upd.setIsKey(req.isKey()); // 重点标记：null=不修改（NOT_NULL 策略），0/1 都写入
         upd.setUpdateTime(LocalDateTime.now());
 
         // 完成时间派生：以请求后的最终状态为准；状态→已完成时进度强制 100（联动）
