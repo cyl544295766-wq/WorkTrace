@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
-import { Delete, Filter, Memo, Plus, Refresh, Search, Star, StarFilled } from '@element-plus/icons-vue'
+import { ArrowRight, Delete, Filter, Memo, Plus, Refresh, Search, Star, StarFilled } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { httpDelete, httpGet, httpPost, httpPut } from '@/api/request'
 
@@ -126,6 +126,25 @@ function goReport(): void {
   router.push('/reports')
 }
 
+/* ── 小屏适配：窄视口自动收起次要列（≤1440 隐藏完成时间，≤1280 再隐藏工时），
+ * 全部列宽总和在宽屏 ~1270px，1280 级别屏幕收起两列后无横向滚动；
+ * matchMedia 断点驱动，v-if 摘除列让 el-table 正常重排，不裁数据只收 UI ── */
+const mqlHideFinish = window.matchMedia('(max-width: 1440px)')
+const mqlHideHours = window.matchMedia('(max-width: 1280px)')
+const hideFinishCol = ref(mqlHideFinish.matches)
+const hideHoursCol = ref(mqlHideHours.matches)
+const syncBreaks = (): void => {
+  hideFinishCol.value = mqlHideFinish.matches
+  hideHoursCol.value = mqlHideHours.matches
+}
+syncBreaks()
+mqlHideFinish.addEventListener('change', syncBreaks)
+mqlHideHours.addEventListener('change', syncBreaks)
+onBeforeUnmount(() => {
+  mqlHideFinish.removeEventListener('change', syncBreaks)
+  mqlHideHours.removeEventListener('change', syncBreaks)
+})
+
 /* ── 数据：真接口（GET /tasks/page 拉全量 → 前端按 parentId 组树 → 改动即时回写） ── */
 const tasks = ref<Task[]>([])
 const loading = ref(true)
@@ -236,6 +255,7 @@ async function loadTasks(): Promise<void> {
       size: 500, // 个人任务量级：一次拉全，前端组树/筛选/级联都在内存做
     })
     tasks.value = buildTree((page.records ?? []).map(fromApi))
+    expandedIds.value = new Set() // 新数据默认全部收起
   } catch (e) {
     console.error('loadTasks failed', e)
     tasks.value = [] // 错误提示由 request.ts 统一处理
@@ -243,6 +263,9 @@ async function loadTasks(): Promise<void> {
     loading.value = false
   }
 }
+/** 行深度表（id → 层级：根=0，子=1，孙=2…）：rowClassName 区分「子级 / 子孙级」样式用 */
+const rowDepth = new Map<number, number>()
+
 function buildTree(items: Task[]): Task[] {
   const byId = new Map(items.map((t) => [t.id, t]))
   const roots: Task[] = []
@@ -251,6 +274,12 @@ function buildTree(items: Task[]): Task[] {
     if (parent && parent !== t) parent.children.push(t)
     else roots.push(t)
   }
+  const walk = (list: Task[], depth: number) =>
+    list.forEach((t) => {
+      rowDepth.set(t.id, depth)
+      walk(t.children, depth + 1)
+    })
+  walk(roots, 0)
   return roots
 }
 onMounted(loadTasks)
@@ -512,10 +541,24 @@ function findTask(id: number): Task | undefined {
   return walk(tasks.value)
 }
 
-/** 行级样式：父/子任务分层 + 已完成行整行淡出 */
+/** 行级样式：父 / 子级 / 子孙级（深度≥2）三层分层 + 已完成行整行淡出 */
 function rowClassName({ row }: { row: Task }): string {
-  const level = row.parentId == null ? 'row-parent' : 'row-child'
+  const level =
+    row.parentId == null
+      ? 'row-parent'
+      : `row-child${(rowDepth.get(row.id) ?? 1) >= 2 ? ' row-grand' : ''}`
   return row.status === 'done' ? `${level} row-done` : level
+}
+
+/* ── 树展开：EP 原生缩进/箭头渲染在首列（复选框列）且按深度溢出到标题列，
+ * 深层箭头会被标题文字盖住（点击误触行内编辑）——隐藏之，
+ * 由标题列自制的 tree-indent（深度×64px 缩进）+ tree-toggle 箭头接管 ── */
+const expandedIds = ref(new Set<number>())
+function toggleExpand(row: Task): void {
+  const next = !expandedIds.value.has(row.id)
+  if (next) expandedIds.value.add(row.id)
+  else expandedIds.value.delete(row.id)
+  tableRef.value?.toggleRowExpansion(row, next) // 显式传目标态，避免父子组件状态漂移
 }
 
 /* ── 行选中（判断"选中大任务 → 加子任务"） ── */
@@ -636,9 +679,13 @@ async function addTask(parentId: number | null): Promise<void> {
   let target: Task
   if (parent) {
     parent.children.unshift(draft)
+    rowDepth.set(draft.id, (rowDepth.get(parent.id) ?? 0) + 1) // 新行深度 = 父 +1
+    expandedIds.value.add(parent.id)
+    tableRef.value?.toggleRowExpansion(parent, true) // 确保新子任务立即可见
     target = parent // 保持选中大任务，便于连续加多个子任务
   } else {
     tasks.value.unshift(draft)
+    rowDepth.set(draft.id, 0)
     target = draft
   }
   // 新增叶子可能推翻父级已持久化的派生状态 → 快照已含新行，diff 只会回写漂移的父级
@@ -787,13 +834,12 @@ async function handleDelete(row: Task): Promise<void> {
         :data="pagedTasks"
         row-key="id"
         :tree-props="{ children: 'children' }"
-        :indent="20"
         :row-class-name="rowClassName"
         highlight-current-row
         style="width: 100%"
         @current-change="onCurrentChange"
       >
-        <el-table-column label="完成" width="72" align="center">
+        <el-table-column label="完成" width="64" align="center">
           <template #default="{ row }">
             <el-checkbox
               :model-value="row.status === 'done'"
@@ -810,6 +856,7 @@ async function handleDelete(row: Task): Promise<void> {
               v-model="titleDraft"
               size="small"
               placeholder="输入任务标题"
+              :style="{ marginLeft: `${(rowDepth.get((row as Task).id) ?? 0) * 64}px` }"
               @update:model-value="(v) => (titleDraft = String(v))"
               @keyup.enter="commitField(row as Task, 'title', titleDraft)"
               @blur="commitField(row as Task, 'title', titleDraft)"
@@ -821,6 +868,17 @@ async function handleDelete(row: Task): Promise<void> {
               @click="startEdit(row as Task, 'title')"
             >
               <div class="task-title">
+                <!-- 层级缩进占位：深度 × 64px（EP 原生缩进渲染在首列、不位移标题，此处自制） -->
+                <span class="tree-indent" :style="{ width: `${(rowDepth.get((row as Task).id) ?? 0) * 64}px` }" />
+                <!-- 展开箭头：有子任务才显示（EP 原生箭头深层会被标题盖住，自制接管） -->
+                <span
+                  v-if="(row as Task).children.length > 0"
+                  class="tree-toggle"
+                  :class="{ 'is-expanded': expandedIds.has((row as Task).id) }"
+                  @click.stop="toggleExpand(row as Task)"
+                >
+                  <el-icon :size="12"><ArrowRight /></el-icon>
+                </span>
                 <!-- 重点星标：「设重点」后显示（首页「重点任务」卡同源数据） -->
                 <el-icon v-if="(row as Task).isKey === 1" class="task-title__star"><StarFilled /></el-icon>
                 <!-- 子任务：层级引导肘线；父任务：状态色条 -->
@@ -843,7 +901,7 @@ async function handleDelete(row: Task): Promise<void> {
         </el-table-column>
 
         <!-- 类型：已知类型下拉；选“其他”→ 自定义输入框（可输自定义类型并显示） -->
-        <el-table-column label="类型" width="160" align="center">
+        <el-table-column label="类型" width="104" align="center" class-name="col-category">
           <template #default="{ row }">
             <el-input
               v-if="isEditing(row as Task, 'category') && categoryInputMode"
@@ -886,7 +944,7 @@ async function handleDelete(row: Task): Promise<void> {
         </el-table-column>
 
         <!-- 状态 -->
-        <el-table-column label="状态" width="110" align="center">
+        <el-table-column label="状态" width="96" align="center">
           <template #default="{ row }">
             <el-select
               v-if="isEditing(row as Task, 'status')"
@@ -910,7 +968,7 @@ async function handleDelete(row: Task): Promise<void> {
         </el-table-column>
 
         <!-- 优先级 -->
-        <el-table-column label="优先级" width="100" align="center">
+        <el-table-column label="优先级" width="88" align="center">
           <template #default="{ row }">
             <el-select
               v-if="isEditing(row as Task, 'priority')"
@@ -928,7 +986,7 @@ async function handleDelete(row: Task): Promise<void> {
         </el-table-column>
 
         <!-- 进度：叶子=手动滑块（用户直接拖），父任务=子任务进度均值派生 -->
-        <el-table-column label="进度" width="150" align="center">
+        <el-table-column label="进度" width="132" align="center">
           <template #default="{ row }">
             <el-slider
               v-if="(row as Task).children.length === 0"
@@ -952,7 +1010,7 @@ async function handleDelete(row: Task): Promise<void> {
         </el-table-column>
 
         <!-- 计划日期 -->
-        <el-table-column label="计划日期" width="150" align="center">
+        <el-table-column label="计划日期" width="128" align="center">
           <template #default="{ row }">
             <el-date-picker
               v-if="isEditing(row as Task, 'planDate')"
@@ -970,8 +1028,8 @@ async function handleDelete(row: Task): Promise<void> {
           </template>
         </el-table-column>
 
-        <!-- 完成时间：后端派生（状态→已完成时打戳，移出清空），只读展示 -->
-        <el-table-column label="完成时间" width="150" align="center">
+        <!-- 完成时间：后端派生（状态→已完成时打戳，移出清空），只读展示；窄视口收起 -->
+        <el-table-column v-if="!hideFinishCol" label="完成时间" width="140" align="center">
           <template #default="{ row }">
             <span :class="{ 'finish-time': (row as Task).finishTime }">
               {{ fmtTime((row as Task).finishTime) || '—' }}
@@ -979,8 +1037,8 @@ async function handleDelete(row: Task): Promise<void> {
           </template>
         </el-table-column>
 
-        <!-- 工时 -->
-        <el-table-column label="工时(h)" width="120" align="right">
+        <!-- 工时；更窄视口（≤1280）一并收起 -->
+        <el-table-column v-if="!hideHoursCol" label="工时(h)" width="88" align="right">
           <template #default="{ row }">
             <el-input-number
               v-if="isEditing(row as Task, 'hours')"
@@ -997,7 +1055,7 @@ async function handleDelete(row: Task): Promise<void> {
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="230" align="center" fixed="right">
+        <el-table-column label="操作" width="212" align="center" fixed="right">
           <template #default="{ row }">
             <el-button
               link
@@ -1385,19 +1443,29 @@ async function handleDelete(row: Task): Promise<void> {
  * 树形缩进由 el-table 的 tree-props + :indent 提供。
  */
 
-/* 父行整体浅底色（更浅一档，避免与选中高亮/hover 叠加发浑） */
+/* ── 分层：父行=浅蓝底 + 左缘品牌蓝条（视觉上的“分组条”）；子行=白底 + 更深缩进 ── */
 :deep(.el-table .el-table__row.row-parent > td.el-table__cell) {
-  background-color: var(--el-fill-color-lighter);
+  background-color: #dfeaf8;
 }
 
-/* 当前选中高亮仍优于此底色 */
+/* 左缘品牌蓝条打在首列上，随行纵向贯穿 */
+:deep(.el-table .el-table__row.row-parent > td.el-table__cell:first-child) {
+  box-shadow: inset 4px 0 0 var(--wt-blue);
+}
+
+/* 父行 hover 深一档（全局 hover #f2f7ff 比父行底色浅，需单独覆盖才可见） */
+:deep(.el-table .el-table__row.row-parent:hover > td.el-table__cell) {
+  background-color: #d3e4f6;
+}
+
+/* 当前选中高亮：比父行底色明显更深，置于 hover 之后（同特异性后者胜） */
 :deep(.el-table .el-table__row.row-parent.current-row > td.el-table__cell) {
-  background-color: var(--el-color-primary-light-9);
+  background-color: #c8ddf3;
 }
 
-/* 父任务标题：加粗、字号略大 */
+/* 父任务标题：加粗、字号略大（分组头质感） */
 :deep(.el-table .row-parent .task-title__text) {
-  font-weight: 600;
+  font-weight: 700;
   font-size: 14px;
 }
 
@@ -1405,6 +1473,30 @@ async function handleDelete(row: Task): Promise<void> {
 :deep(.el-table .row-child .task-title__text) {
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+
+/* ── 子孙级（深度≥2）：与直接子级拉开明显区隔 ──
+ * 可见浅蓝底 + 左缘浅蓝条 + 标题降一档 + 引导线更淡——越深层越“退后” */
+:deep(.el-table .el-table__row.row-grand > td.el-table__cell) {
+  background-color: #eaf1f9;
+}
+
+/* 左缘浅蓝条：比父行的品牌蓝条浅一档，标记“深层区” */
+:deep(.el-table .el-table__row.row-grand > td.el-table__cell:first-child) {
+  box-shadow: inset 3px 0 0 #b5d0ec;
+}
+
+:deep(.el-table .el-table__row.row-grand:hover > td.el-table__cell) {
+  background-color: #dfeaf6;
+}
+
+:deep(.el-table .row-grand .task-title__text) {
+  color: #7e8ea0;
+  font-weight: 400;
+}
+
+:deep(.el-table .row-grand .task-title__prefix) {
+  border-color: #ccd9e6;
 }
 
 /* 已完成任务标题：删除线优先级最高 */
@@ -1418,15 +1510,16 @@ async function handleDelete(row: Task): Promise<void> {
   opacity: 0.55;
 }
 
-/* 子任务：CSS 肘线引导（替代字符 └，更精致） */
+/* 子任务：全高树形引导线——竖线顶满行高，同层兄弟 x 对齐连成“主干”，横臂指向标题（经典文件树视觉） */
 .task-title__prefix {
   box-sizing: border-box;
   flex-shrink: 0;
-  width: 9px;
-  height: 9px;
-  margin-right: 6px;
-  border-left: 2px solid var(--el-border-color);
-  border-bottom: 2px solid var(--el-border-color);
+  align-self: stretch;
+  width: 12px;
+  /* 上下顶满行高（抵消子行 9px 垂直 padding），竖线贯穿行间 */
+  margin: -9px 8px -9px 0;
+  border-left: 2px solid #b9c8d9;
+  border-bottom: 2px solid #b9c8d9;
 }
 
 /* 父任务状态色条：颜色跟随任务状态 */
@@ -1475,6 +1568,15 @@ async function handleDelete(row: Task): Promise<void> {
   padding: 12px 0;
 }
 
+/* 分层行距：父行更舒展、子行更紧凑（强化“组与成员”的视觉差） */
+:deep(.el-table .el-table__row.row-parent .el-table__cell) {
+  padding: 14px 0;
+}
+
+:deep(.el-table .el-table__row.row-child .el-table__cell) {
+  padding: 9px 0;
+}
+
 /* 行间浅灰细分隔线 */
 :deep(.el-table td.el-table__cell) {
   border-bottom: 1px solid #eef1f6;
@@ -1485,12 +1587,42 @@ async function handleDelete(row: Task): Promise<void> {
   color: var(--wt-text);
 }
 
-/* 展开箭头：更大点击热区 */
-:deep(.el-table__expand-icon) {
-  width: 28px;
-  height: 28px;
-  font-size: 15px;
-  line-height: 28px;
+/* EP 的树缩进/箭头渲染在首列（复选框列）且按深度向右溢出到标题列，
+   深层箭头会被标题文字盖住（真实点击落不到箭头上，反而误触行内编辑）。
+   隐藏之，由标题列自制的 tree-indent（深度×64px）+ tree-toggle 接管缩进与展开 */
+:deep(.el-table__expand-icon),
+:deep(.el-table__indent) {
+  display: none !important;
+}
+
+/* 自制展开箭头：紧跟缩进占位，展开时旋转 90° 朝下 */
+.tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-right: 4px;
+  border-radius: 4px;
+  color: var(--wt-muted);
+  cursor: pointer;
+  transition: transform 0.15s, background-color 0.15s, color 0.15s;
+}
+
+.tree-toggle:hover {
+  background-color: var(--el-fill-color);
+  color: var(--wt-blue);
+}
+
+.tree-toggle.is-expanded {
+  transform: rotate(90deg);
+  color: var(--wt-blue);
+}
+
+/* 缩进占位：宽度由模板按行深度内联给定 */
+.tree-indent {
+  flex-shrink: 0;
 }
 
 /* 删除按钮降噪：默认灰，hover 才变红 */
@@ -1521,6 +1653,18 @@ async function handleDelete(row: Task): Promise<void> {
   flex-shrink: 0;
   margin-right: 4px;
   color: var(--wt-orange);
+}
+
+/* 操作列三个文字按钮间距收紧（列宽 212 内放下） */
+:deep(.el-table .el-table__cell .el-button + .el-button) {
+  margin-left: 6px;
+}
+
+/* 小屏：页边距收窄，给表格让出宽度 */
+@media (max-width: 1280px) {
+  .task-page {
+    padding: 16px;
+  }
 }
 
 /* 标题外层：点击编辑热区 + hover 底色 */
@@ -1574,32 +1718,72 @@ async function handleDelete(row: Task): Promise<void> {
   background-color: var(--wt-green);
 }
 
-/* ── 标签：统一高度/内边距/圆角，轻量化浅底 ── */
+/* ── 标签：现代轻量风 ──
+ * 状态/优先级：药丸形 + 同色圆点；类型列：圆角芯片（分类不是状态，无点）。
+ * 浅底精确色 + 同色加深文字 + 同色细描边——在父/孙行的浅底色上也读得清。
+ * plain 徽标（子任务计数）与带内联 color 的跟进类型标签不受影响 */
+/* cell-editable 的 inline-block 会覆写 EP 的 inline-flex，导致药丸内文字/圆点不居中——显式恢复 */
 :deep(.el-tag) {
-  height: 24px;
-  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
 }
 
-/* 标签浅底用规范精确色：浅蓝 / 浅绿 / 浅橙 / 浅红
-   （plain 徽标与带内联 color 的跟进类型标签不在此列，保持原样） */
+:deep(.el-tag:not(.el-tag--plain))::before {
+  content: '';
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* 类型列：方圆角芯片、无圆点（tag 元素在本组件模板内，普通 scoped 选择器即可命中） */
+.col-category .el-tag {
+  border-radius: 6px;
+}
+
+.col-category .el-tag::before {
+  display: none;
+}
+
+/* 白底芯片：彩色浅底压在父行蓝带/孙行浅蓝底上会色叠色出“错层”，
+   改白底 + 同色细描边 + 圆点 + 加深文字，任何行底色上都干净 */
 :deep(.el-tag--primary:not(.el-tag--plain)) {
-  background: #eaf3ff;
+  background: #fff;
+  color: #2e71c2;
+  box-shadow: inset 0 0 0 1px rgb(46 113 194 / 32%);
 }
 
 :deep(.el-tag--success:not(.el-tag--plain)) {
-  background: #e8f8f5;
+  background: #fff;
+  color: #0e9f6e;
+  box-shadow: inset 0 0 0 1px rgb(14 159 110 / 34%);
 }
 
 :deep(.el-tag--warning:not(.el-tag--plain)) {
-  background: #fdf3e8;
+  background: #fff;
+  color: #c97a1f;
+  box-shadow: inset 0 0 0 1px rgb(201 122 31 / 34%);
 }
 
 :deep(.el-tag--danger:not(.el-tag--plain)) {
-  background: #fdecec;
+  background: #fff;
+  color: #d93843;
+  box-shadow: inset 0 0 0 1px rgb(217 56 67 / 32%);
+}
+
+:deep(.el-tag--info:not(.el-tag--plain)) {
+  background: #fff;
+  color: #64748b;
+  box-shadow: inset 0 0 0 1px rgb(100 116 139 / 32%);
 }
 
 /* ── 分页区：品牌蓝当前页，白底浅灰边框页码 ── */
