@@ -1,8 +1,8 @@
 # WorkTrace
 
-个人工作留痕系统。当前已实现：**登录会话、任务管理（多级树 / 进度 / 跟进记录 / 完成时间）、AI 工作报告（SSE 流式）、统一响应与全局异常、防重复提交注解**。
+个人工作留痕系统。当前已实现：**登录会话、首页（设计图还原）、任务管理（多级树 / 进度 / 跟进记录 / 完成时间 / 重点标记）、AI 工作洞察、AI 工作报告（SSE 流式）、统一响应与全局异常、防重复提交注解**。
 
-页面：登录 `/login`、任务管理 `/tasks`（主页）、AI 报告生成 `/reports`；另有一个已实现但尚未挂路由的工作统计大屏 `Dashboard.vue`。数据库统一由 `docker-compose.yml` 管理，库内只保留 6 张在用表（设计稿中未实现的 14 张表已由 `12_drop_unused.sql` 裁剪）。
+页面：首页 `/`、登录 `/login`、任务管理 `/tasks`、AI 报告生成 `/reports`；另有一个已实现但尚未挂路由的工作统计大屏 `Dashboard.vue`。数据库统一由 `docker-compose.yml` 管理，库内只保留 6 张在用表（设计稿中未实现的 14 张表已由 `12_drop_unused.sql` 裁剪）。
 
 ## 技术栈
 
@@ -29,7 +29,21 @@
 - **进度**：叶子任务行内滑块**用户直接拖**（0-100，步长 5）；父任务显示子任务进度**均值派生**条。拖满 ⇔ 勾选完成双向联动（完成时进度=100，拖离 100 移出完成）
 - **完成时间**：后端派生——状态首次变为已完成打 `finish_time` 时间戳，移出已完成清空（`NULL` 显示「—」）
 - **跟进记录**：`biz_task_log` 时间线（找领导核实 / 备注 / 开发 / 其他），抽屉内新增 / 按时间线展示 / 逐条删除
+- **重点标记**：操作列「设重点 / 取消重点」+ 标题橙色星标（`biz_task.is_key`）；被标记的任务显示在首页「重点任务」卡（按计划日期升序取 3 条），类型选「其他」可自定义输入
 - **接口**：`GET /api/tasks/page`（一次拉全量，前端组树与筛选）、`POST /api/tasks`、`PUT /api/tasks`、`DELETE /api/tasks/{id}`；`GET /api/tasks/logs?taskId=`、`POST /api/tasks/logs`、`DELETE /api/tasks/logs/{id}`
+
+### 首页（`/` → `Home.vue`）
+
+- 问候横幅（小时问候 + ICU 中文农历）、KPI 四卡（全部 / 进行中 / 已完成 / 待处理，真数据派生）
+- 任务走势（ECharts 折线，近 7/30/90 天按创建 / 完成时间按日聚合）、任务状态分布（环形）
+- 重点任务卡：任务管理「设重点」的任务（`is_key=1`，计划日期升序取 3 条），勾选直接改完成状态
+- AI 工作洞察卡（见下）；AI 报告中心入口（跳 `/reports?type=` 预选）
+
+### AI 工作洞察（`insight`，`GET /api/insights/work`）
+
+- 按当前用户真实任务统计（状态 / 逾期 / 到期 / 优先级 / 分类 / 重点数）调 DeepSeek 生成 `{headline, para, advice}` 三段洞察
+- **降级在服务端**：AI key 缺失 / 超时 / 解析失败 / 无任务 → 返回规则兜底文案（source=RULES），接口恒 `Result.ok`；前端本地规则文案兜网络层失败
+- Caffeine 按用户缓存 AI 结果 30 分钟（RULES 不缓存，下次自动重试）；配置复用 `ai.*`（与 AI 报告共用）
 
 ### AI 报告（`report`，`/reports` → `ReportGenerator.vue`）
 
@@ -48,7 +62,7 @@ WorkTrace/
 ├─ docker-compose.yml           # 三容器编排：mysql（初始化 00–12 脚本）、backend、frontend
 ├─ docker/mysql-init/           # 容器专用初始化：00 时区表、09 账号主机适配
 ├─ server/
-│  ├─ db/                       # DDL 分片 01–12（11=业务表，12=裁剪未用表）+ 执行/验收说明
+│  ├─ db/                       # DDL 分片 01–13（11=业务表，12=裁剪未用表，13=is_key 幂等迁移）+ 执行/验收说明
 │  ├─ src/main/java/com/worktrace/
 │  │  ├─ auth/                  # 登录会话（AuthController、LoginInterceptor、SysUser 实体/映射）
 │  │  ├─ common/
@@ -57,6 +71,7 @@ WorkTrace/
 │  │  │  ├─ exception/          # BizException
 │  │  │  ├─ idempotent/         # @Idempotent 注解 + 切面
 │  │  │  └─ web/                # GlobalExceptionHandler
+│  │  ├─ insight/               # AI 工作洞察（DeepSeek + 规则兜底）
 │  │  ├─ report/                # AI 报告生成（含 SSE 流式）
 │  │  ├─ task/                  # 任务 + 跟进记录（entity/mapper/dto/service/web）
 │  │  └─ WorkTraceApplication.java
@@ -65,9 +80,10 @@ WorkTrace/
 ├─ web/
 │  ├─ src/api/request.ts        # Axios 封装：统一拆包、401 清登录态跳登录
 │  ├─ src/components/NavBar.vue # 顶部导航（登录态、页面切换、退出）
-│  ├─ src/router/               # /login /tasks /reports + 登录守卫 + 标题同步
+│  ├─ src/router/               # / /login /tasks /reports + 登录守卫 + 标题同步
 │  ├─ src/stores/user.ts        # 登录态（localStorage 持久化）
-│  ├─ src/views/                # Login / TaskList / ReportGenerator / Dashboard(未挂路由)
+│  ├─ src/views/                # Home / Login / TaskList / ReportGenerator / Dashboard(未挂路由)
+│  ├─ src/assets/home/          # 首页设计稿裁切素材（KPI / 报告图标）
 │  ├─ vite.config.ts            # '@' 别名、/api 开发代理
 │  └─ package.json
 ├─ deploy/                      # 本地一键发布（GitHub 无流水线，见 deploy/README.md）
@@ -111,13 +127,13 @@ docker compose restart mysql
 | 顺序 | 来源 | 作用 |
 |---|---|---|
 | `00_load_tz.sh` | `docker/mysql-init/` | 加载 MySQL 时区表（JDBC 使用 `Asia/Shanghai` 必需） |
-| `01`–`12` | `server/db/` | DDL 分片：`01–08` 设计稿建表、`10` 演示账号、`11` 业务表（`biz_task` 含 `finish_time`/`progress`、`biz_task_log`）、`12` 裁剪未实现表 |
+| `01`–`13` | `server/db/` | DDL 分片：`01–08` 设计稿建表、`10` 演示账号、`11` 业务表（`biz_task` 含 `is_key`/`finish_time`/`progress`、`biz_task_log`）、`12` 裁剪未实现表、`13` 幂等补 `is_key` |
 | `09_docker_app_user.sql` | `docker/mysql-init/` | 把 `wt_app` 账号主机改为 `%`，适配宿主机经端口映射连接 |
 
 > 本环境若无法访问 Docker Hub，可先从镜像站拉取再打标签：
 > `docker pull docker.m.daocloud.io/library/mysql:8.4 && docker tag docker.m.daocloud.io/library/mysql:8.4 mysql:8.4`
 
-**用本机 MySQL 替代 Docker（可选）**：在 `server/db` 目录按 01→12 顺序执行全部分片即可，此时 `wt_app` 按设计使用 `'wt_app'@'127.0.0.1'`，无需 `09` 适配脚本；并自行加载时区表：
+**用本机 MySQL 替代 Docker（可选）**：在 `server/db` 目录按 01→13 顺序执行全部分片即可，此时 `wt_app` 按设计使用 `'wt_app'@'127.0.0.1'`，无需 `09` 适配脚本；并自行加载时区表：
 
 ```bash
 mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root -p mysql
@@ -125,7 +141,7 @@ mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root -p mysql
 
 `08_sys_seed.sql` 会创建应用账号 `wt_app`（密码 `WorkTrace_App_2026!`）；`10_sys_user.sql` 创建演示账号 `admin`（密码 `admin123`，明文，仅供登录模块联调，生产必须改存 BCrypt 哈希并替换密码）。
 
-**存量库升级**（已建过表的开发机/服务器）：`CREATE TABLE IF NOT EXISTS` 对已存在的表不生效，需执行 `server/db/11_biz_tables.sql` 头部注释里的 `ALTER`（补 `finish_time`、`progress` 列）并单独 `CREATE TABLE biz_task_log`。
+**存量库升级**（已建过表的开发机/服务器）：`CREATE TABLE IF NOT EXISTS` 对已存在的表不生效，需执行 `server/db/11_biz_tables.sql` 头部注释里的 `ALTER`（补 `parent_id`/`category`/`finish_time`/`progress` 等历史列）并单独 `CREATE TABLE biz_task_log`；`is_key` 列直接跑幂等脚本 `server/db/13_task_is_key.sql`（重复执行安全）。
 
 验证：
 
@@ -175,7 +191,7 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:5173/`，登录后进入任务管理页。开发服务器把 `/api` 代理到 `http://localhost:8080`。
+打开 `http://localhost:5173/`，登录后进入首页。开发服务器把 `/api` 代理到 `http://localhost:8080`。
 
 ```bash
 npm run type-check
@@ -238,15 +254,18 @@ npm run preview
 | `spring.profiles.default` | `dev` | |
 | `spring.servlet.session.timeout` | `7d` | Session 落库 |
 | `VITE_API_BASE` | `/api` | 前端请求前缀 |
+| `AI_API_KEY`（`ai.api-key`） | 空 | DeepSeek / OpenAI key，AI 报告与 AI 洞察共用；不配则报告报错、洞察降级为规则文案 |
+| `ai.base-url` | `https://api.deepseek.com/v1` | OpenAI 兼容 Chat Completions 地址 |
+| `ai.model` | `deepseek-chat` | OpenAI 可换 `gpt-4o-mini` |
 
 时区三处对齐：MySQL `default-time-zone='+08:00'`、JDBC `connectionTimeZone=Asia/Shanghai&forceConnectionTimeZoneToSession=true`、JVM `-Duser.timezone=Asia/Shanghai`。
 
 ## 主题
 
-当前为 **Element Plus 默认浅色主题 + 品牌青 `#1FB6A6`**：
+当前为 **蓝绿白品牌色（Element Plus 浅色主题）**：品牌蓝 `#3988E8`、主操作青绿 `#13B8A6`、页面底 `#F2F4F7`、卡片白、边框 `#E5EAF0`：
 
-- 主色通过页面级 CSS 变量覆盖（任务页整页覆盖 `--el-color-primary` 系列，`color-mix` 派生浅/深变体）
-- 状态色：待办灰 / 进行中 `#1FB6A6` / 已完成绿；进度条进行中青、满格绿
+- 首页与任务管理共用色板（页面级 CSS 变量覆盖 `--el-color-primary` 系列，`color-mix` 派生浅/深变体）
+- 状态四态标签：待处理浅橙 / 进行中浅蓝 / 已完成浅绿 / 已逾期浅红；进度条青绿、满格绿
 - 历史的深青 `tokens.css` 主题已随页面重构移除
 
 ## 已验证
@@ -255,6 +274,7 @@ npm run preview
 - **后端**：`mvn compile` / `mvn clean package` 均通过（当前无单元测试，`src/test` 为空）；Docker `backend` 容器运行，任务 / 跟进记录 / 报告接口可用。
 - **前端**：`npm run type-check`、`npm run build` 均通过（build 14s 级，仅体积提示无报错）。
 - **任务模块端到端（本地浏览器实测）**：登录守卫、树形层级、行内编辑按 diff 回写、进度滑块拖动 / 满格联动完成、完成时间打戳与清空、父任务状态手动修改不被子任务派生覆盖、子任务全完成父任务自动完成、跟进记录时间线增删，均验证通过。
+- **首页 / AI 洞察 / 重点标记端到端（线上实测）**：KPI 与图表真数据、ICU 农历问候、AI 洞察生成与缓存命中（空 key 降级 RULES 实测）、设重点 → 首页重点任务卡可见 → 取消即消失（按计划日期取 3 条、空日期排后），均验证通过。
 
 ## 已知差异与后续事项
 
@@ -262,6 +282,6 @@ npm run preview
 2. `@Idempotent` 注解与切面已就绪，业务接口暂未挂载（当前提交场景手工防重足够，需要时在 Controller 方法上加注解即可）。
 3. 「退出登录」只清前端登录态，服务端会话按 Cookie 7 天自然过期，无主动失效接口。
 4. 数据库从设计稿 19 张裁剪至 6 张（`12_drop_unused.sql`，线上已于 2026-11-05 同步删除）；被裁表的 DDL 仍保留在 `02–08` 分片中，未来实现某功能时把该表从 `12` 的 `DROP` 列表移除即可。
-5. `biz_task_log` 与 `biz_task` 的 `finish_time` / `progress` 为后加能力：全新库由 `11_biz_tables.sql` 直接建全，**存量库需执行该文件头部注释中的 `ALTER`**。
+5. `biz_task_log` 与 `biz_task` 的 `parent_id` / `category` / `finish_time` / `progress` / `is_key` 为后加能力：全新库由 `11_biz_tables.sql` 直接建全，**存量库需执行该文件头部注释中的 `ALTER`**；`is_key` 另有幂等脚本 `13_task_is_key.sql` 可直接跑。
 6. Element Plus 全量注册，主包 `index` 约 1.2MB（gzip 约 390KB，含 EP 全量组件与样式），构建有「>500KB」体积提示但成功；在意体积可改按需引入或 `manualChunks` 分包。
 7. 演示账号 `admin/admin123` 为明文比对（登录联调用），生产必须改存 BCrypt 哈希并替换密码。

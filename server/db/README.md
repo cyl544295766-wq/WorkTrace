@@ -1,18 +1,18 @@
 # WorkTrace 数据库脚本（MySQL 8）
 
-本目录是数据库 DDL 的唯一来源：`01`–`08` 为 T02 交付分片，`10`–`12` 为功能落地后的补充分片
-（演示账号、业务表、裁剪未用表），按序号顺序在 **MySQL 8.0.20+** 实例上执行。
+本目录是数据库 DDL 的唯一来源：`01`–`08` 为 T02 交付分片，`10`–`13` 为功能落地后的补充分片
+（演示账号、业务表、裁剪未用表、幂等补列），按序号顺序在 **MySQL 8.0.20+** 实例上执行。
 分片只负责建库建表、系统 seed 与最小权限；业务数据由应用产生。
 
-> **Docker 部署**：仓库根目录的 `docker-compose.yml` 会把本目录 `01`–`12` 自动挂载到
+> **Docker 部署**：仓库根目录的 `docker-compose.yml` 会把本目录 `01`–`13` 自动挂载到
 > `/docker-entrypoint-initdb.d`，首次 `docker compose up -d` 时按序执行，无需手动运行。
 > 另有两个容器专用脚本（不属于本目录分片）：`docker/mysql-init/00_load_tz.sh`（加载时区表）
 > 与 `09_docker_app_user.sql`（把 `wt_app` 主机从 `127.0.0.1` 改为 `%`，适配端口映射访问）。
 > 本机直接执行时不需要这两个脚本。
 
 > **存量库升级**：`CREATE TABLE IF NOT EXISTS` 对已存在的表不生效。已建过 `biz_task` 的
-> 实例需单独执行 `11_biz_tables.sql` 头部注释中的 `ALTER`（补 `finish_time`、`progress` 列），
-> `biz_task_log` 若未建则单独执行其 `CREATE TABLE`。
+> 实例需单独执行 `11_biz_tables.sql` 头部注释中的 `ALTER`（补 `parent_id`、`category`、`finish_time`、`progress` 列），
+> `biz_task_log` 若未建则单独执行其 `CREATE TABLE`；`is_key` 列直接跑幂等脚本 `13_task_is_key.sql`（重复执行安全）。
 
 ## 1. 执行顺序
 
@@ -28,8 +28,9 @@
 | 07 | `07_export.sql` | `export_job` + `uk_export_active` |
 | 08 | `08_sys_seed.sql` | `sys_lock`、`sys_config`、`wt_app` 账号与授权 |
 | 10 | `10_sys_user.sql` | `sys_user` 表、演示账号 seed、`wt_app` 对 `sys_user` 的授权 |
-| 11 | `11_biz_tables.sql` | `biz_task`（含 `finish_time`、`progress`）、`biz_report`、`biz_task_log` 及 `wt_app` 授权；头部含存量库 `ALTER` 注释 |
+| 11 | `11_biz_tables.sql` | `biz_task`（含 `is_key`、`finish_time`、`progress`）、`biz_report`、`biz_task_log` 及 `wt_app` 授权；头部含存量库 `ALTER` 注释 |
 | 12 | `12_drop_unused.sql` | 裁剪 `02`–`08` 中未实现的 14 张表，使全新初始化与线上一致（最终在用 6 张：`sys_user`、`biz_task`、`biz_task_log`、`biz_report`、`SPRING_SESSION` ×2） |
+| 13 | `13_task_is_key.sql` | 幂等补 `biz_task.is_key` 重点标记列（列已存在则跳过；全新库由 11 直接建出，本脚本面向存量库） |
 
 全新实例上依次执行：
 
@@ -46,6 +47,7 @@ mysql --default-character-set=utf8mb4 -u root -p < 08_sys_seed.sql
 mysql --default-character-set=utf8mb4 -u root -p < 10_sys_user.sql
 mysql --default-character-set=utf8mb4 -u root -p < 11_biz_tables.sql
 mysql --default-character-set=utf8mb4 -u root -p < 12_drop_unused.sql
+mysql --default-character-set=utf8mb4 -u root -p < 13_task_is_key.sql
 ```
 
 也可以在 `mysql` 客户端内执行 `SOURCE 01_user_session.sql;`，依此类推。
