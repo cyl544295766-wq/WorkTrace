@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { ElMessage, type FormInstance, type FormItemRule, type FormRules } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import { ApiError, httpPost } from '@/api/request'
 import { useUserStore } from '@/stores/user'
@@ -20,14 +20,44 @@ const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 
+/** 登录 / 注册同页双模式（不加路由） */
+const mode = ref<'login' | 'register'>('login')
+
 const formRef = ref<FormInstance>()
 const loading = ref(false)
-const form = reactive({ username: '', password: '' })
+const form = reactive({ username: '', password: '', confirm: '', nickname: '' })
 
-const rules: FormRules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
-}
+const rules = computed<FormRules>(() => {
+  const usernameRules: FormItemRule[] = [{ required: true, message: '请输入用户名', trigger: 'blur' }]
+  const passwordRules: FormItemRule[] = [{ required: true, message: '请输入密码', trigger: 'blur' }]
+  const base: FormRules = { username: usernameRules, password: passwordRules }
+  if (mode.value === 'register') {
+    usernameRules.push({
+      pattern: /^[a-zA-Z0-9_]{3,32}$/,
+      message: '用户名为 3-32 位字母、数字或下划线',
+      trigger: 'blur',
+    })
+    passwordRules.push({ min: 6, max: 32, message: '密码长度 6-32 位', trigger: 'blur' })
+    base.confirm = [
+      { required: true, message: '请再次输入密码', trigger: 'blur' },
+      {
+        validator: (_rule: unknown, value: unknown, callback: (err?: Error) => void) => {
+          if (value === form.password) callback()
+          else callback(new Error('两次输入的密码不一致'))
+        },
+        trigger: 'blur',
+      },
+    ]
+  }
+  return base
+})
+
+// 切模式：清密码与校验残留
+watch(mode, () => {
+  form.password = ''
+  form.confirm = ''
+  formRef.value?.clearValidate()
+})
 
 async function handleLogin(): Promise<void> {
   if (!formRef.value) return
@@ -65,6 +95,47 @@ async function handleLogin(): Promise<void> {
     loading.value = false
   }
 }
+
+/** 注册：后端 BCrypt 落库并自动登录（写好会话），体验与登录一致 */
+async function handleRegister(): Promise<void> {
+  if (!formRef.value) return
+  try {
+    await formRef.value.validate()
+  } catch {
+    return
+  }
+
+  loading.value = true
+  try {
+    const user = await httpPost<LoginResult>('/auth/register', {
+      username: form.username,
+      password: form.password,
+      nickname: form.nickname.trim(),
+    })
+    userStore.setUser('', {
+      id: user.id,
+      username: user.username,
+      nickname: user.nickname,
+      roles: [],
+    })
+    ElMessage.success(`注册成功，欢迎 ${user.nickname || user.username}`)
+    const redirect = route.query.redirect
+    await router.push(typeof redirect === 'string' && redirect.startsWith('/') ? redirect : '/')
+  } catch (e) {
+    // 业务失败（用户名已存在等）request.ts 已统一 toast；此处只兜非 ApiError 意外
+    if (!(e instanceof ApiError)) {
+      ElMessage.error(e instanceof Error ? e.message : '注册失败，请重试')
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+/** 表单提交：按模式分发 */
+function handleSubmit(): void {
+  if (mode.value === 'register') void handleRegister()
+  else void handleLogin()
+}
 </script>
 
 <template>
@@ -72,7 +143,7 @@ async function handleLogin(): Promise<void> {
     <el-card class="login-card" shadow="always">
       <div class="login-head">
         <h1>WorkTrace</h1>
-        <p>任务管理 · 登录以继续</p>
+        <p>{{ mode === 'register' ? '创建账号 · 开始记录你的工作轨迹' : '任务管理 · 登录以继续' }}</p>
       </div>
 
       <el-form ref="formRef" :model="form" :rules="rules" size="large" label-position="top" @submit.prevent>
@@ -94,7 +165,30 @@ async function handleLogin(): Promise<void> {
             :prefix-icon="Lock"
             show-password
             autocomplete="current-password"
-            @keyup.enter="handleLogin"
+            @keyup.enter="handleSubmit"
+          />
+        </el-form-item>
+
+        <!-- 注册专属：确认密码 + 昵称（可选） -->
+        <el-form-item v-if="mode === 'register'" label="确认密码" prop="confirm">
+          <el-input
+            v-model="form.confirm"
+            type="password"
+            placeholder="再次输入密码"
+            :prefix-icon="Lock"
+            show-password
+            autocomplete="new-password"
+            @keyup.enter="handleSubmit"
+          />
+        </el-form-item>
+
+        <el-form-item v-if="mode === 'register'" label="昵称（可选）" prop="nickname">
+          <el-input
+            v-model="form.nickname"
+            placeholder="不填则与用户名相同"
+            :prefix-icon="User"
+            maxlength="16"
+            clearable
           />
         </el-form-item>
 
@@ -104,11 +198,22 @@ async function handleLogin(): Promise<void> {
           size="large"
           native-type="button"
           :loading="loading"
-          @click="handleLogin"
+          @click="handleSubmit"
         >
-          {{ loading ? '登录中…' : '登 录' }}
+          {{ loading ? (mode === 'register' ? '注册中…' : '登录中…') : mode === 'register' ? '注 册' : '登 录' }}
         </el-button>
       </el-form>
+
+      <p class="login-switch">
+        <template v-if="mode === 'register'">
+          已有账号？
+          <el-link type="primary" :underline="false" @click="mode = 'login'">去登录</el-link>
+        </template>
+        <template v-else>
+          没有账号？
+          <el-link type="primary" :underline="false" @click="mode = 'register'">去注册</el-link>
+        </template>
+      </p>
 
       <p class="login-hint">演示账号：admin / admin123</p>
     </el-card>
@@ -116,14 +221,29 @@ async function handleLogin(): Promise<void> {
 </template>
 
 <style scoped>
+/* ═══════ 第一阶段：整体布局 + 背景视觉（浅蓝灰渐变 + 柔和蓝色光晕） ═══════ */
 .login-page {
+  position: relative;
   min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
+  /* flex + margin auto 居中：内容高于视口时也不会被裁切（无异常垂直溢出） */
+  display: flex;
+  padding: clamp(24px, 6vh, 56px) 24px;
+  /* 光晕装饰禁止产生横向滚动条 */
+  overflow-x: hidden;
   background:
-    radial-gradient(circle at 50% 0%, var(--el-color-primary-light-9), transparent 55%),
-    var(--el-bg-color-page);
+    /* 柔和蓝色光晕 · 左上 */
+    radial-gradient(900px 540px at 12% -10%, rgba(96, 145, 240, 0.18), transparent 62%),
+    /* 柔和蓝紫光晕 · 右下（空间层次） */
+    radial-gradient(860px 520px at 90% 110%, rgba(133, 150, 245, 0.15), transparent 64%),
+    /* 中部极淡冷光，让卡片周围更通透 */
+    radial-gradient(760px 460px at 50% 44%, rgba(219, 232, 252, 0.55), transparent 72%),
+    /* 基底：浅蓝灰渐变 */
+    linear-gradient(165deg, #f3f7fd 0%, #e9eef9 52%, #edf2fb 100%);
+}
+
+/* 登录区域：水平垂直居中 + 舒适留白（卡片本体样式不变） */
+.login-card {
+  margin: auto;
 }
 
 .login-card {
@@ -157,6 +277,13 @@ async function handleLogin(): Promise<void> {
 .login-btn {
   width: 100%;
   margin-top: 4px;
+}
+
+.login-switch {
+  margin: 14px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  text-align: center;
 }
 
 .login-hint {
