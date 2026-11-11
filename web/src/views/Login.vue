@@ -142,8 +142,22 @@ function handleSubmit(): void {
   <div class="login-page">
     <el-card class="login-card" shadow="always">
       <div class="login-head">
+        <!-- 品牌 Logo：任务清单行 + 勾选轨迹（扁平 SVG，零依赖） -->
+        <span class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 48 48">
+            <defs>
+              <linearGradient id="wtBrandG" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#5aa2f7" />
+                <stop offset="1" stop-color="#2f6bf0" />
+              </linearGradient>
+            </defs>
+            <rect x="1.5" y="1.5" width="45" height="45" rx="13.5" fill="url(#wtBrandG)" />
+            <path d="M13 16.5h9.5" stroke="#cfe4ff" stroke-width="3.2" stroke-linecap="round" />
+            <path d="M14 27.5 20 33.5 34.5 17.5" fill="none" stroke="#ffffff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
         <h1>WorkTrace</h1>
-        <p>{{ mode === 'register' ? '创建账号 · 开始记录你的工作轨迹' : '任务管理 · 登录以继续' }}</p>
+        <p class="brand-sub">让工作有序，让协作更高效</p>
       </div>
 
       <el-form ref="formRef" :model="form" :rules="rules" size="large" label-position="top" @submit.prevent>
@@ -268,26 +282,74 @@ function handleSubmit(): void {
 }
 
 /* 品牌区 → 表单 → 底部辅助信息的节奏微调（仅间距，不改内容） */
+/* ═══════ 第三阶段：品牌 Logo 与标题区域 ═══════ */
 .login-head {
   margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   text-align: center;
 }
 
+/* Logo：48px 扁平方块 + 柔和品牌蓝投影，Hover 轻微上浮放大 */
+.brand-logo {
+  width: 48px;
+  height: 48px;
+  display: block;
+  margin-bottom: 14px;
+  filter: drop-shadow(0 8px 18px rgba(47, 107, 240, 0.26));
+  transition: transform 0.2s ease, filter 0.2s ease;
+  animation: brandIn 0.5s ease-out 0.05s both;
+}
+
+.brand-logo:hover {
+  transform: translateY(-2px) scale(1.04);
+  filter: drop-shadow(0 12px 22px rgba(47, 107, 240, 0.34));
+}
+
+.brand-logo:active {
+  transform: translateY(0) scale(0.99);
+}
+
+.brand-logo svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 品牌名：26px / 700 / 深蓝灰纯色（无渐变文字） */
 .login-head h1 {
   margin: 0;
   font-size: 26px;
   font-weight: 700;
-  letter-spacing: 0.5px;
-  background: linear-gradient(90deg, var(--el-color-primary), var(--el-color-primary-light-3));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  letter-spacing: 0.3px;
+  color: #24344d;
+  animation: brandIn 0.5s ease-out 0.12s both;
 }
 
-.login-head p {
-  margin: 8px 0 0;
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
+/* 产品定位副标题：柔和蓝灰 13.5px */
+.brand-sub {
+  margin: 7px 0 0;
+  font-size: 13.5px;
+  letter-spacing: 0.02em;
+  color: #7b8aa6;
+  animation: brandIn 0.5s ease-out 0.19s both;
+}
+
+@keyframes brandIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-logo,
+  .login-head h1,
+  .brand-sub {
+    animation: none;
+  }
+  .brand-logo {
+    transition: none;
+  }
 }
 
 .login-btn {
