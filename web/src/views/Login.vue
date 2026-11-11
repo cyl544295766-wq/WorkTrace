@@ -246,14 +246,30 @@ function handleSubmit(): void {
   margin: auto;
 }
 
+/* ═══════ 第二阶段：登录卡片容器视觉升级（背景与布局保持不变） ═══════ */
 .login-card {
   width: min(100%, 400px);
-  padding: 8px 4px;
+  /* 内距交由 el-card__body 统一控制，保证左右对齐与呼吸空间 */
+  padding: 0;
   border-radius: 16px;
+  /* 近纯白面板 + 细腻浅蓝灰边框（与背景同色系，层次清晰） */
+  background: #fff;
+  border: 1px solid #e9eef6;
+  /* 多层低透明度灰蓝阴影：贴地层 → 中层 → 远层，自然浮现、无重黑投影 */
+  box-shadow:
+    0 1px 2px rgba(37, 60, 112, 0.04),
+    0 10px 28px -12px rgba(37, 60, 112, 0.1),
+    0 28px 60px -28px rgba(37, 60, 112, 0.16);
 }
 
+/* 舒适内距：上 34 / 左右 34 / 下 28（内容区统一，无多余空白） */
+.login-card :deep(.el-card__body) {
+  padding: 34px 34px 28px;
+}
+
+/* 品牌区 → 表单 → 底部辅助信息的节奏微调（仅间距，不改内容） */
 .login-head {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
   text-align: center;
 }
 
@@ -280,14 +296,14 @@ function handleSubmit(): void {
 }
 
 .login-switch {
-  margin: 14px 0 0;
+  margin: 18px 0 0;
   color: var(--el-text-color-secondary);
   font-size: 13px;
   text-align: center;
 }
 
 .login-hint {
-  margin: 16px 0 0;
+  margin: 14px 0 0;
   color: var(--el-text-color-placeholder);
   font-size: 12px;
   text-align: center;
