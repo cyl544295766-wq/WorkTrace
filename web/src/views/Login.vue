@@ -136,6 +136,12 @@ function handleSubmit(): void {
   if (mode.value === 'register') void handleRegister()
   else void handleLogin()
 }
+
+/** 已显示错误的字段在输入时即时重校验（及时清除错误；从未提交过的字段不提前报错） */
+function revalidateIfError(prop: 'username' | 'password'): void {
+  const field = formRef.value?.fields.find((f) => f.prop === prop)
+  if (field?.validateState === 'error') void formRef.value?.validateField(prop)
+}
 </script>
 
 <template>
@@ -168,6 +174,7 @@ function handleSubmit(): void {
             :prefix-icon="User"
             autocomplete="username"
             clearable
+            @input="revalidateIfError('username')"
           />
         </el-form-item>
 
@@ -179,6 +186,7 @@ function handleSubmit(): void {
             :prefix-icon="Lock"
             show-password
             autocomplete="current-password"
+            @input="revalidateIfError('password')"
             @keyup.enter="handleSubmit"
           />
         </el-form-item>
@@ -369,5 +377,99 @@ function handleSubmit(): void {
   color: var(--el-text-color-placeholder);
   font-size: 12px;
   text-align: center;
+}
+
+/* ═══════ 第四阶段：输入框视觉与表单交互 ═══════ */
+/* 统一输入框规范：44px 高 · 圆角 8 · 浅灰蓝边框 · 纯白底 */
+.login-card :deep(.el-input) {
+  --el-input-height: 44px;
+}
+
+.login-card :deep(.el-input__wrapper) {
+  padding: 1px 12px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 0 0 1px #dfe7f2 inset;
+  transition: box-shadow 0.18s ease;
+}
+
+.login-card :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #c6d4e8 inset;
+}
+
+/* 聚焦：品牌蓝边框 + 柔和蓝色外发光（:focus-within 纯 CSS，不依赖组件 JS 类） */
+.login-card :deep(.el-input__wrapper:focus-within) {
+  box-shadow: 0 0 0 1.5px #3988e8 inset, 0 0 0 3px rgba(57, 136, 232, 0.16);
+}
+
+/* 输入文字深蓝灰 · 占位符柔和灰蓝 */
+.login-card :deep(.el-input__inner) {
+  color: #24344d;
+  font-size: 14.5px;
+}
+
+.login-card :deep(.el-input__inner::placeholder) {
+  color: #96a7bf;
+}
+
+/* 图标统一：16px · 默认灰蓝 · 聚焦同步品牌蓝 · 与文字 8px 间距 · 平滑过渡 */
+.login-card :deep(.el-input__prefix) {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+}
+
+.login-card :deep(.el-input__suffix) {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+}
+
+.login-card :deep(.el-input__icon) {
+  font-size: 16px;
+  color: #93a5bd;
+  transition: color 0.18s ease, transform 0.18s ease;
+}
+
+.login-card :deep(.el-input__wrapper:focus-within .el-input__icon) {
+  color: #3988e8;
+}
+
+/* 密码眼睛（及清除按钮）：轻微缩放反馈 */
+.login-card :deep(.el-input__suffix .el-input__icon:hover) {
+  transform: scale(1.08);
+  color: #5b7ea8;
+}
+
+/* 表单标签：统一字号字重 · 柔和必填星号 · 与输入框 7px 间距 */
+.login-card :deep(.el-form-item__label) {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #45546f;
+  margin-bottom: 7px;
+  padding-bottom: 0;
+}
+
+.login-card :deep(.el-form-item__label::before) {
+  color: #e8756f;
+  font-size: 12px;
+  margin-right: 4px;
+}
+
+/* 表单项垂直节奏统一；错误文字绝对定位（不引起布局跳动） */
+.login-card :deep(.el-form-item) {
+  margin-bottom: 22px;
+}
+
+.login-card :deep(.el-form-item__error) {
+  top: calc(100% + 5px);
+  font-size: 12px;
+  color: #e06c6c;
+}
+
+/* 输入错误态：柔和红边框 + 极淡红光（覆盖聚焦蓝） */
+.login-card :deep(.el-form-item.is-error .el-input__wrapper) {
+  box-shadow: 0 0 0 1.5px #e88a8a inset, 0 0 0 3px rgba(230, 110, 110, 0.1);
 }
 </style>
