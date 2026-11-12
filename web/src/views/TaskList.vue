@@ -38,7 +38,7 @@ interface Task {
 }
 
 /** 可内联编辑的字段（进度走滑块的 preview/commit 专用链路，不进内联编辑） */
-type TaskField = 'title' | 'category' | 'status' | 'priority' | 'planDate' | 'hours'
+type TaskField = 'title' | 'category' | 'status' | 'priority' | 'planDate'
 
 /* ── 枚举显示 / 编辑器选项 ─────────────────── */
 const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
@@ -126,23 +126,17 @@ function goReport(): void {
   router.push('/reports')
 }
 
-/* ── 小屏适配：窄视口自动收起次要列（≤1440 隐藏完成时间，≤1280 再隐藏工时），
- * 全部列宽总和在宽屏 ~1270px，1280 级别屏幕收起两列后无横向滚动；
+/* ── 小屏适配：窄视口自动收起次要列（≤1440 隐藏完成时间），
  * matchMedia 断点驱动，v-if 摘除列让 el-table 正常重排，不裁数据只收 UI ── */
 const mqlHideFinish = window.matchMedia('(max-width: 1440px)')
-const mqlHideHours = window.matchMedia('(max-width: 1280px)')
 const hideFinishCol = ref(mqlHideFinish.matches)
-const hideHoursCol = ref(mqlHideHours.matches)
 const syncBreaks = (): void => {
   hideFinishCol.value = mqlHideFinish.matches
-  hideHoursCol.value = mqlHideHours.matches
 }
 syncBreaks()
 mqlHideFinish.addEventListener('change', syncBreaks)
-mqlHideHours.addEventListener('change', syncBreaks)
 onBeforeUnmount(() => {
   mqlHideFinish.removeEventListener('change', syncBreaks)
-  mqlHideHours.removeEventListener('change', syncBreaks)
 })
 
 /* ── 数据：真接口（GET /tasks/page 拉全量 → 前端按 parentId 组树 → 改动即时回写） ── */
@@ -636,9 +630,6 @@ async function commitField(row: Task, field: TaskField, value: unknown): Promise
     case 'planDate':
       row.planDate = String(value ?? '')
       break
-    case 'hours':
-      row.hours = Number(value ?? 0)
-      break
   }
   editing.value = null
   // 父任务（有子节点）的编辑不触发派生：手动改的状态要保留；
@@ -1034,24 +1025,6 @@ async function handleDelete(row: Task): Promise<void> {
             <span :class="{ 'finish-time': (row as Task).finishTime }">
               {{ fmtTime((row as Task).finishTime) || '—' }}
             </span>
-          </template>
-        </el-table-column>
-
-        <!-- 工时；更窄视口（≤1280）一并收起 -->
-        <el-table-column v-if="!hideHoursCol" label="工时(h)" width="88" align="right">
-          <template #default="{ row }">
-            <el-input-number
-              v-if="isEditing(row as Task, 'hours')"
-              :model-value="row.hours"
-              :min="0"
-              :step="0.5"
-              size="small"
-              controls-position="right"
-              style="width: 110px"
-              @update:model-value="(v) => commitField(row as Task, 'hours', v)"
-              @click.stop
-            />
-            <span v-else class="cell-editable" @click="startEdit(row as Task, 'hours')">{{ row.hours }}</span>
           </template>
         </el-table-column>
 

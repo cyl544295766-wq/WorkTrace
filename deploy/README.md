@@ -38,9 +38,9 @@ SKIP_TESTS=1 已是默认口径；测试执行需 MySQL 容器，构建与发布
 
 ## 外网入口（nginx :8081）
 
-访问地址：**http://140.143.166.155:8081/** （前端 SPA + `/api/` 反代到本机 8080）
+访问地址：**http://140.143.166.155:8081/** （前端 SPA + `/api/` 反代到本机 8083）
 
-- 站点配置：[deploy/nginx/worktrace.conf](nginx/worktrace.conf)，与 NewTrevl 的 travel-os（**:80**）、adminer（:8001）完全独立，互不影响。安装：
+- 站点配置：[deploy/nginx/worktrace.conf](nginx/worktrace.conf)，与 Monevo Console（**:80**，monevo-nginx 容器）、adminer（:8001）完全独立，互不影响。安装：
   ```bash
   scp -i ~/.ssh/travel_os_deploy deploy/nginx/worktrace.conf ubuntu@<服务器>:/tmp/
   ssh -i ~/.ssh/travel_os_deploy ubuntu@<服务器> \
@@ -50,7 +50,7 @@ SKIP_TESTS=1 已是默认口径；测试执行需 MySQL 容器，构建与发布
   ```
 - **腾讯云安全组必须放行 TCP:8081 入站**（控制台 → 云服务器 → 安全组 → 入站规则；来源 0.0.0.0/0，协议端口 TCP:8081，动作允许），**服务器本机 UFW 也需放行**（`sudo ufw allow 8081/tcp`）。两层都放行前外网超时，服务器本机 `curl 127.0.0.1:8081` 依然正常。
   > 2026-11-05 已完成两层放行并外网端到端验证（首页/深链/静态/登录全 200）。
-- 安全边界：Spring Boot 仍只监听 `127.0.0.1:8080`，公网**只能**经 nginx 到达 `/api/`；`actuator` 不经 nginx 暴露，健康检查只在服务器本机做。
+- 安全边界：Spring Boot 经 `worktrace.env` 监听 `0.0.0.0:8083`（供 Monevo 整合页内网直连；8083 未在 UFW/安全组放行，公网不可直连），公网**只能**经 nginx 到达 `/api/`；`actuator` 不经 nginx 暴露，健康检查只在服务器本机做。
 
 ## 配置文件
 
@@ -77,9 +77,9 @@ systemd  worktrace.service        # /etc/systemd/system/worktrace.service，enab
 env      /home/ubuntu/worktrace/worktrace.env   # chmod 600：DB_PASSWORD / AI_API_KEY
 jar      /home/ubuntu/worktrace/app.jar         # ExecStart 指向这里；backups/ 同目录
 MySQL    Docker 容器 worktrace-mysql（mysql:8.4，见下"数据库"小节），应用连 127.0.0.1:3306/work_system，账号 wt_app@'%'
-后端     127.0.0.1:8080（仅本机，公网不可直连）
+后端     0.0.0.0:8083（worktrace.env 的 SERVER_PORT/SERVER_ADDRESS；内网与容器可直连，8083 未放行公网不可直连）
 前端     /var/www/worktrace/（publish.sh 第 5 步 rsync --delete 发布）
-nginx    :8081 = WorkTrace（deploy/nginx/worktrace.conf）｜:80 = travel-os ｜:8001 = adminer
+nginx    :8081 = WorkTrace（deploy/nginx/worktrace.conf）｜:80 = Monevo Console（monevo-nginx 容器）｜:8001 = adminer
 DDL      /home/ubuntu/worktrace/init-sql/（01→01a→02..08→09→10→11 顺序已执行）
 ```
 
@@ -111,7 +111,7 @@ DDL      /home/ubuntu/worktrace/init-sql/（01→01a→02..08→09→10→11 顺
 | 症状 | 处理 |
 |---|---|
 | 发布在第 5 步失败 | 脚本已自动回滚备份并重启；服务器上 `sudo journalctl -u worktrace -n 50` |
-| 健康检查过不去 | `curl -sm 3 http://127.0.0.1:8080/actuator/health`；确认 `systemctl status worktrace` |
+| 健康检查过不去 | `curl -sm 3 http://127.0.0.1:8083/actuator/health`；确认 `systemctl status worktrace` |
 | md5 不一致中止 | 网络传输问题，重跑 `./deploy/publish.sh` 即可（会重新构建+传输） |
 | 登录/接口 500 | 查 DB：`sudo docker exec worktrace-mysql mysql -uroot -p"$(cat /home/ubuntu/worktrace/.mysql-root-pw)" -e "SELECT COUNT(*) FROM work_system.biz_task"`；时区表缺失会导致连接失败（见下） |
 | 新机器初始化库 | Docker MySQL 容器内先 `mysql_tzinfo_to_sql /usr/share/zoneinfo \| mysql -uroot -p$PW mysql` 加载时区表（JDBC `connectionTimeZone=Asia/Shanghai` 依赖，**就绪判断用 `mysql -e 'SELECT 1'` 校验密码，别信 mysqladmin ping**——临时 server 阶段 ping 也返回成功），再按序跑 `init-sql/*.sql`（含 `11_biz_tables.sql`——`biz_task`/`biz_report` 不在 01-10 分片里） |

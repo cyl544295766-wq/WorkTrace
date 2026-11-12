@@ -1,10 +1,12 @@
 package com.worktrace.report.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.worktrace.report.dto.GenerateReportReq;
+import com.worktrace.report.dto.ReportItemVO;
 import com.worktrace.report.entity.BizReport;
 import com.worktrace.report.mapper.BizReportMapper;
 import com.worktrace.task.entity.BizTask;
@@ -97,6 +99,43 @@ public class ReportService {
         return new RestTemplate(factory);
     }
 
+    /* ==================== 历史报告记录（列表 / 详情 / 删除） ==================== */
+
+    /** 分页查当前用户的报告记录（按创建时间倒序）；列表只回摘要，不传全文 */
+    public Page<ReportItemVO> pageReports(Long userId, long page, long size) {
+        Page<BizReport> pg = bizReportMapper.selectPage(new Page<>(page, size),
+                Wrappers.<BizReport>lambdaQuery()
+                        .eq(BizReport::getUserId, userId)
+                        .orderByDesc(BizReport::getCreateTime));
+        // 手动映射成 VO（Page.convert 本版本返回 IPage，与 TaskController 的 Page 契约不一致）
+        Page<ReportItemVO> out = new Page<>(pg.getCurrent(), pg.getSize(), pg.getTotal());
+        out.setRecords(pg.getRecords().stream().map(ReportService::toItem).toList());
+        return out;
+    }
+
+    /** 报告行 → 列表 VO（正文压成 80 字单行摘要） */
+    private static ReportItemVO toItem(BizReport r) {
+        String content = r.getContent() == null ? "" : r.getContent().strip();
+        String summary = content.length() > 80 ? content.substring(0, 80) + "…" : content;
+        summary = summary.replace('\n', ' ');
+        return new ReportItemVO(r.getId(), r.getReportType(), r.getStartDate(), r.getEndDate(),
+                r.getAiModel(), r.getCreateTime(), summary);
+    }
+
+    /** 按归属查单条报告（含全文）；不存在或非本人返回 null */
+    public BizReport getOwnedReport(Long userId, Long id) {
+        return bizReportMapper.selectOne(Wrappers.<BizReport>lambdaQuery()
+                .eq(BizReport::getUserId, userId)
+                .eq(BizReport::getId, id));
+    }
+
+    /** 删除报告记录（仅本人，物理删除）；true=已删除 */
+    public boolean deleteReport(Long userId, Long id) {
+        return bizReportMapper.delete(Wrappers.<BizReport>lambdaQuery()
+                .eq(BizReport::getUserId, userId)
+                .eq(BizReport::getId, id)) > 0;
+    }
+
     /**
      * 生成并保存报告。
      *
@@ -134,7 +173,13 @@ public class ReportService {
     /** 把任务列表拼成结构化 Prompt */
     private String buildPrompt(String reportType, LocalDate startDate, LocalDate endDate, List<BizTask> tasks) {
         StringBuilder sb = new StringBuilder();
-        sb.append("请根据以下任务数据生成一份 ").append(reportType).append(" 工作报告，使用 Markdown 格式。\n");
+        String typeCn = switch (reportType) {
+            case "DAILY" -> "日报";
+            case "WEEKLY" -> "周报";
+            case "MONTHLY" -> "月报";
+            default -> reportType;
+        };
+        sb.append("请根据以下任务数据生成一份").append(typeCn).append("，使用 Markdown 格式。\n");
         sb.append("时间范围：").append(startDate).append(" 至 ").append(endDate).append('\n');
         sb.append("任务总数：").append(tasks.size()).append("\n\n任务清单：\n");
 
@@ -156,7 +201,14 @@ public class ReportService {
             sb.append('\n');
         }
 
-        sb.append("\n输出要求：按「概览 / 完成情况 / 问题与延期 / 后续计划」等小节组织，直接输出 Markdown 正文，不要额外说明。");
+        if ("DAILY".equals(reportType)) {
+            // 日报走精简通道：用户明确要求"不要生成的特别多"
+            sb.append("\n输出要求（日报，务必精简）：全文不超过 300 字；禁止表格、禁止数据罗列、禁止套话。"
+                    + "结构：开头一句话总结当日进展，然后「今日完成」（每条一行，只写任务标题）、「进行中 / 待办」（只列最重要的 1-3 条）、"
+                    + "「明日重点」（1-3 条）。无内容的小节直接省略。直接输出 Markdown 正文，不要额外说明。");
+        } else {
+            sb.append("\n输出要求：按「概览 / 完成情况 / 问题与延期 / 后续计划」等小节组织，直接输出 Markdown 正文，不要额外说明。");
+        }
         return sb.toString();
     }
 

@@ -1,15 +1,21 @@
 package com.worktrace.report.web;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.worktrace.auth.dto.LoginUser;
 import com.worktrace.common.api.Result;
 import com.worktrace.report.dto.GenerateReportReq;
+import com.worktrace.report.dto.ReportItemVO;
 import com.worktrace.report.entity.BizReport;
 import com.worktrace.report.service.ReportService;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -75,5 +81,46 @@ public class ReportController {
         }
         reportService.streamGenerateReport(user.getId(), req, emitter);
         return emitter;
+    }
+
+    /** GET /api/reports/page —— 当前用户的历史报告记录（分页，按创建时间倒序） */
+    @GetMapping("/page")
+    public Result<Page<ReportItemVO>> page(
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "10") long size,
+            HttpSession session) {
+        LoginUser user = currentUser(session);
+        if (user == null) {
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
+        }
+        return Result.ok(reportService.pageReports(user.getId(),
+                Math.max(page, 1), Math.min(Math.max(size, 1), 100)));
+    }
+
+    /** GET /api/reports/{id} —— 查看报告全文（仅本人） */
+    @GetMapping("/{id}")
+    public Result<BizReport> detail(@PathVariable Long id, HttpSession session) {
+        LoginUser user = currentUser(session);
+        if (user == null) {
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
+        }
+        BizReport report = reportService.getOwnedReport(user.getId(), id);
+        if (report == null) {
+            return Result.fail(Result.NOT_FOUND, "报告不存在或无权操作");
+        }
+        return Result.ok(report);
+    }
+
+    /** DELETE /api/reports/{id} —— 删除报告记录（仅本人，物理删除） */
+    @DeleteMapping("/{id}")
+    public Result<Void> delete(@PathVariable Long id, HttpSession session) {
+        LoginUser user = currentUser(session);
+        if (user == null) {
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
+        }
+        if (!reportService.deleteReport(user.getId(), id)) {
+            return Result.fail(Result.NOT_FOUND, "报告不存在或无权操作");
+        }
+        return Result.ok();
     }
 }

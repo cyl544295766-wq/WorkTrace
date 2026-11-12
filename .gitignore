@@ -28,3 +28,8 @@ server/logs/
 
 # 本地部署配置（服务器 IP/密钥路径，勿提交）
 deploy/.deploy.env
+
+# 工具产物（Playwright/WorkBuddy/Zcode 运行时快照，勿提交）
+.playwright-cli/
+.workbuddy/
+.zcode/

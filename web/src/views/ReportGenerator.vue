@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { Check, CopyDocument, Download } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Check, CopyDocument, Delete, Download, View } from '@element-plus/icons-vue'
+import MarkdownIt from 'markdown-it'
+import DOMPurify from 'dompurify'
+import { httpDelete, httpGet } from '@/api/request'
 
 /** 后端报告（Result.data / done 事件后组装） */
 interface BizReport {
@@ -25,18 +28,126 @@ const REPORT_TYPE_OPTIONS = [
 
 const reportType = ref('DAILY')
 
+/** 类型 → 默认统计周期：日报=今天；周报=本周一~周日；月报=本月 1 号~月末（可再手调） */
+function periodForType(t: string): [string, string] {
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const now = new Date()
+  if (t === 'WEEKLY') {
+    const monday = new Date(now)
+    monday.setDate(now.getDate() - ((now.getDay() + 6) % 7)) // 周一为一周起点
+    const sunday = new Date(monday)
+    sunday.setDate(monday.getDate() + 6)
+    return [fmt(monday), fmt(sunday)]
+  }
+  if (t === 'MONTHLY') {
+    return [fmt(new Date(now.getFullYear(), now.getMonth(), 1)), fmt(new Date(now.getFullYear(), now.getMonth() + 1, 0))]
+  }
+  return [fmt(now), fmt(now)] // 日报 = 今天
+}
+
 // 首页「日报/周报/月报」入口经 /reports?type= 预选类型
 const route = useRoute()
 onMounted(() => {
   const t = String(route.query.type ?? '')
   if (REPORT_TYPE_OPTIONS.some((o) => o.value === t)) reportType.value = t
+  dateRange.value = periodForType(reportType.value) // 进页面即带出默认周期
 })
 const dateRange = ref<string[] | null>(null)
+
+/** 切换类型 = 重新带出对应周期（用户仍可手动微调日期） */
+function onTypeChange(): void {
+  dateRange.value = periodForType(reportType.value)
+}
 
 const generating = ref(false)
 const report = ref<BizReport | null>(null)
 /** 可编辑的报告正文（流式生成期间实时追加，形成打字机效果） */
 const content = ref('')
+
+/* ── 历史报告记录（GET /api/reports/page，仅本人数据） ── */
+
+/** 报告列表行（不含正文全文，仅摘要） */
+interface ReportItem {
+  id: number
+  reportType: string
+  startDate: string
+  endDate: string
+  aiModel: string
+  createTime: string
+  summary: string
+}
+
+const TYPE_LABEL: Record<string, string> = { DAILY: '日报', WEEKLY: '周报', MONTHLY: '月报' }
+const TYPE_TAG: Record<string, string> = { DAILY: 'tag-daily', WEEKLY: 'tag-weekly', MONTHLY: 'tag-monthly' }
+
+const historyItems = ref<ReportItem[]>([])
+const historyTotal = ref(0)
+const historyPage = ref(1)
+const historySize = ref(10)
+const historyLoading = ref(false)
+
+async function loadHistory(): Promise<void> {
+  historyLoading.value = true
+  try {
+    const page = await httpGet<{ records: ReportItem[]; total: number }>('/reports/page', {
+      page: historyPage.value,
+      size: historySize.value,
+    })
+    historyItems.value = page.records ?? []
+    historyTotal.value = page.total ?? 0
+  } catch {
+    // 错误提示由 request.ts 统一处理
+  } finally {
+    historyLoading.value = false
+  }
+}
+onMounted(loadHistory)
+
+function onHistorySizeChange(): void {
+  historyPage.value = 1
+  void loadHistory()
+}
+
+/* ── 查看报告（Markdown 渲染抽屉） ── */
+const md = new MarkdownIt({ html: false, linkify: true })
+const viewDrawer = ref(false)
+const viewReport = ref<BizReport | null>(null)
+const viewContent = ref('')
+/** 渲染 + 消毒：markdown-it 已禁 raw html，DOMPurify 再兜一层（v-html 安全） */
+const viewHtml = computed(() => DOMPurify.sanitize(md.render(viewContent.value || '')))
+
+async function openView(item: ReportItem): Promise<void> {
+  try {
+    viewReport.value = await httpGet<BizReport>(`/reports/${item.id}`)
+    viewContent.value = viewReport.value?.content ?? ''
+    viewDrawer.value = true
+  } catch {
+    // 错误提示由 request.ts 统一处理
+  }
+}
+
+/** 删除报告记录（确认后物理删除） */
+async function removeReport(item: ReportItem): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除「${TYPE_LABEL[item.reportType] ?? '报告'} ${item.startDate} ~ ${item.endDate}」吗？`,
+      '删除报告',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return // 取消
+  }
+  try {
+    await httpDelete(`/reports/${item.id}`)
+  } catch {
+    return // 失败已由 request.ts 弹错
+  }
+  ElMessage.success('已删除')
+  // 本页最后一条被删且不在首页时回退一页
+  if (historyItems.value.length === 1 && historyPage.value > 1) historyPage.value -= 1
+  await loadHistory()
+}
 
 /** 请求中止控制器：页面卸载时中断未完成的流 */
 let abortController: AbortController | null = null
@@ -145,6 +256,7 @@ async function generateReport(): Promise<void> {
               content: content.value,
             }
           }
+          void loadHistory() // 新记录入列
         } else {
           // 默认 message 事件：增量 Markdown 文本块 → 打字机追加
           content.value += data
@@ -176,27 +288,26 @@ function saveEdit(): void {
   ElMessage.success('修改已保存')
 }
 
-/** 复制 Markdown 到剪贴板 */
-async function copyMarkdown(): Promise<void> {
+/** 复制文本到剪贴板（结果卡与查看抽屉共用） */
+async function copyText(text: string): Promise<void> {
   try {
-    await navigator.clipboard.writeText(content.value)
+    await navigator.clipboard.writeText(text)
     ElMessage.success('Markdown 已复制到剪贴板')
   } catch {
     ElMessage.error('复制失败，请手动全选复制')
   }
 }
 
-/** 导出当前正文为 .md 文件（Blob + 临时 <a> 触发下载） */
-function exportMarkdown(): void {
-  if (!content.value.trim()) {
+/** 导出文本为 .md 文件（Blob + 临时 <a> 触发下载；结果卡与查看抽屉共用） */
+function exportText(text: string, meta: Pick<BizReport, 'reportType' | 'startDate' | 'endDate'> | null): void {
+  if (!text.trim()) {
     ElMessage.warning('暂无可导出的报告内容')
     return
   }
-  const typeLabel =
-    REPORT_TYPE_OPTIONS.find((o) => o.value === report.value?.reportType)?.label ?? '报告'
-  const fileName = `WorkTrace_${typeLabel}_${report.value?.startDate ?? ''}_${report.value?.endDate ?? ''}.md`
+  const typeLabel = REPORT_TYPE_OPTIONS.find((o) => o.value === meta?.reportType)?.label ?? '报告'
+  const fileName = `WorkTrace_${typeLabel}_${meta?.startDate ?? ''}_${meta?.endDate ?? ''}.md`
 
-  const blob = new Blob([content.value], { type: 'text/markdown;charset=utf-8' })
+  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -206,6 +317,22 @@ function exportMarkdown(): void {
   document.body.removeChild(a)
   URL.revokeObjectURL(url) // 释放临时对象 URL
   ElMessage.success(`已导出：${fileName}`)
+}
+
+/** 结果卡的复制 / 导出 */
+function copyMarkdown(): void {
+  void copyText(content.value)
+}
+function exportMarkdown(): void {
+  exportText(content.value, report.value)
+}
+
+/** 查看抽屉的复制 / 导出 */
+function copyView(): void {
+  void copyText(viewContent.value)
+}
+function exportView(): void {
+  exportText(viewContent.value, viewReport.value)
 }
 </script>
 
@@ -223,14 +350,11 @@ function exportMarkdown(): void {
       <div class="control-row">
         <div class="control-item">
           <span class="control-label">报告类型</span>
-          <el-select v-model="reportType" size="large" style="width: 140px" :disabled="generating">
-            <el-option
-              v-for="opt in REPORT_TYPE_OPTIONS"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
+          <el-radio-group v-model="reportType" size="large" :disabled="generating" @change="onTypeChange">
+            <el-radio-button v-for="opt in REPORT_TYPE_OPTIONS" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </el-radio-button>
+          </el-radio-group>
         </div>
 
         <div class="control-item">
@@ -285,6 +409,74 @@ function exportMarkdown(): void {
     </el-card>
 
     <el-empty v-else description="选择报告类型与统计周期，点击上方按钮生成报告" :image-size="90" />
+
+    <!-- ③ 生成记录：历史报告列表（仅本人，按 userId 隔离） -->
+    <el-card shadow="never" class="history-card">
+      <template #header>
+        <div class="result-header">
+          <span class="result-header__title">生成记录</span>
+          <span class="result-header__meta">共 {{ historyTotal }} 条 · 按生成时间倒序</span>
+        </div>
+      </template>
+
+      <el-table v-loading="historyLoading" :data="historyItems" style="width: 100%">
+        <el-table-column label="类型" width="90" align="center">
+          <template #default="{ row }">
+            <span class="type-tag" :class="TYPE_TAG[row.reportType]">
+              {{ TYPE_LABEL[row.reportType] ?? row.reportType }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="统计周期" width="210" align="center">
+          <template #default="{ row }">{{ row.startDate }} 至 {{ row.endDate }}</template>
+        </el-table-column>
+        <el-table-column label="摘要" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.summary || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="生成时间" width="170" align="center">
+          <template #default="{ row }">{{ (row.createTime || '').replace('T', ' ').slice(0, 16) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="140" align="center">
+          <template #default="{ row }">
+            <el-button link type="primary" :icon="View" @click="openView(row as ReportItem)">查看</el-button>
+            <el-button link class="btn-delete" :icon="Delete" @click="removeReport(row as ReportItem)">删除</el-button>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <el-empty description="还没有生成过报告，上方生成一条试试" :image-size="70" />
+        </template>
+      </el-table>
+
+      <div class="history-pagination">
+        <el-pagination
+          v-model:current-page="historyPage"
+          v-model:page-size="historySize"
+          :total="historyTotal"
+          :page-sizes="[10, 20, 50]"
+          layout="total, sizes, prev, pager, next"
+          background
+          size="small"
+          @current-change="loadHistory"
+          @size-change="onHistorySizeChange"
+        />
+      </div>
+    </el-card>
+
+    <!-- 查看报告：Markdown 渲染抽屉（markdown-it + DOMPurify） -->
+    <el-drawer
+      v-model="viewDrawer"
+      size="60%"
+      :title="`${TYPE_LABEL[viewReport?.reportType ?? ''] ?? '报告'} · ${viewReport?.startDate ?? ''} 至 ${viewReport?.endDate ?? ''}`"
+    >
+      <div class="view-meta">
+        AI 模型：{{ viewReport?.aiModel }} · 生成于 {{ (viewReport?.createTime ?? '').replace('T', ' ').slice(0, 16) }}
+      </div>
+      <div class="view-body" v-html="viewHtml" />
+      <div class="result-actions">
+        <el-button :icon="CopyDocument" @click="copyView">复制 Markdown</el-button>
+        <el-button type="success" :icon="Download" @click="exportView">导出 Markdown</el-button>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -358,5 +550,108 @@ function exportMarkdown(): void {
   display: flex;
   gap: 12px;
   margin-top: 16px;
+}
+
+/* ── 生成记录卡 ── */
+.history-card {
+  border-radius: 12px;
+}
+
+.history-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+/* 类型标签：白底芯片三色（与任务页标签体系一致） */
+.type-tag {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tag-daily {
+  color: #2e71c2;
+  box-shadow: inset 0 0 0 1px rgb(46 113 194 / 32%);
+}
+
+.tag-weekly {
+  color: #0e9f6e;
+  box-shadow: inset 0 0 0 1px rgb(14 159 110 / 34%);
+}
+
+.tag-monthly {
+  color: #c97a1f;
+  box-shadow: inset 0 0 0 1px rgb(201 122 31 / 34%);
+}
+
+/* 删除按钮降噪（同任务页） */
+.btn-delete {
+  color: var(--el-text-color-secondary);
+}
+
+.btn-delete:hover {
+  color: var(--el-color-danger);
+}
+
+/* ── 查看抽屉：渲染后的 Markdown ── */
+.view-meta {
+  margin-bottom: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.view-body {
+  line-height: 1.8;
+  color: #25364a;
+}
+
+.view-body :deep(h1),
+.view-body :deep(h2),
+.view-body :deep(h3) {
+  margin: 18px 0 8px;
+  font-size: 17px;
+}
+
+.view-body :deep(p) {
+  margin: 8px 0;
+}
+
+.view-body :deep(ul),
+.view-body :deep(ol) {
+  padding-left: 22px;
+}
+
+.view-body :deep(code) {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #f2f4f7;
+}
+
+.view-body :deep(pre) {
+  padding: 12px;
+  border-radius: 8px;
+  background: #f7f9fc;
+  overflow-x: auto;
+}
+
+.view-body :deep(table) {
+  border-collapse: collapse;
+}
+
+.view-body :deep(th),
+.view-body :deep(td) {
+  padding: 6px 10px;
+  border: 1px solid #e5eaf0;
+}
+
+.view-body :deep(blockquote) {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid #3988e8;
+  color: #8796a8;
 }
 </style>

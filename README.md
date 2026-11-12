@@ -25,12 +25,12 @@
 ### 任务管理（`task`，`/tasks` → `TaskList.vue`）
 
 - **层级**：`parent_id` 前端组树，**每级 64px 真缩进 + 自制展开箭头**（EP 原生缩进/箭头渲染在首列、深层箭头会被标题文字盖住，已弃用改由标题列自制接管），父/子/孙三层底色（父行深蓝分组条 / 子级白底 / 子孙级浅蓝底+浅蓝条）；删除任务级联删除全部后代（BFS 收集）与跟进记录
-- **行内编辑**：标题、类型、状态、优先级、计划日期、实际工时直接点单元格修改，改动按快照 diff 即时回写；类型/状态/优先级以白底芯片标签呈现（状态/优先级药丸形带同色圆点、类型圆角芯片），点击即改
+- **行内编辑**：标题、类型、状态、优先级、计划日期直接点单元格修改，改动按快照 diff 即时回写；类型/状态/优先级以白底芯片标签呈现（状态/优先级药丸形带同色圆点、类型圆角芯片），点击即改
 - **进度**：叶子任务行内滑块**用户直接拖**（0-100，步长 5）；父任务显示子任务进度**均值派生**条。拖满 ⇔ 勾选完成双向联动（完成时进度=100，拖离 100 移出完成）
 - **完成时间**：后端派生——状态首次变为已完成打 `finish_time` 时间戳，移出已完成清空（`NULL` 显示「—」）
 - **跟进记录**：`biz_task_log` 时间线（找领导核实 / 备注 / 开发 / 其他），抽屉内新增 / 按时间线展示 / 逐条删除
 - **重点标记**：操作列「设重点 / 取消重点」+ 标题橙色星标（`biz_task.is_key`）；被标记的任务显示在首页「重点任务」卡（按计划日期升序取 3 条），类型选「其他」可自定义输入
-- **小屏适配**：列宽整体瘦身（全列 ~1270px）；≤1440 自动收起「完成时间」列、≤1280 再收起「工时(h)」（matchMedia 断点驱动摘列，数据不丢），1280 级别屏幕无横向滚动，宽屏列自动回归
+- **小屏适配**：≤1440 自动收起「完成时间」列（matchMedia 断点驱动摘列，数据不丢），1280 级别屏幕无横向滚动，宽屏列自动回归
 - **接口**：`GET /api/tasks/page`（一次拉全量，前端组树与筛选）、`POST /api/tasks`、`PUT /api/tasks`、`DELETE /api/tasks/{id}`；`GET /api/tasks/logs?taskId=`、`POST /api/tasks/logs`、`DELETE /api/tasks/logs/{id}`
 
 ### 首页（`/` → `Home.vue`）
@@ -49,6 +49,7 @@
 ### AI 报告（`report`，`/reports` → `ReportGenerator.vue`）
 
 - `POST /api/reports/generate` 一次性生成；`POST /api/reports/stream-generate` **SSE 流式推送**（前端逐字渲染）
+- **生成记录**：报告全部落库 `biz_report`（按 userId 隔离），页面下方列出历史记录（`GET /api/reports/page` 摘要分页、`GET /api/reports/{id}` 全文、`DELETE /api/reports/{id}` 删除）；查看抽屉以 markdown-it + DOMPurify 渲染 Markdown，支持复制 / 导出
 
 ### 公共能力（`common`）
 
@@ -251,7 +252,7 @@ npm run preview
 | `MYSQL_ROOT_PASSWORD` | `WorkTrace_Root_2026!` | 容器 root 密码，可在根目录 `.env` 覆盖 |
 | 数据库地址 | `127.0.0.1:3306` | Docker 端口映射，仅发布到本机回环 |
 | `server.address` | `127.0.0.1` | 单机部署，由反向代理暴露 |
-| `server.port` | `8080` | |
+| `server.port` | `8080`（dev 默认） | 服务器经 `worktrace.env` 覆盖为 `SERVER_PORT=8083` + `SERVER_ADDRESS=0.0.0.0`（Monevo 内网直连用），公网入口仍是 nginx :8081 |
 | `spring.profiles.default` | `dev` | |
 | `spring.servlet.session.timeout` | `7d` | Session 落库 |
 | `VITE_API_BASE` | `/api` | 前端请求前缀 |

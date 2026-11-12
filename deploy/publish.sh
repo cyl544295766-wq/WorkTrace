@@ -37,7 +37,7 @@ export JAVA_HOME
 # 服务器端布局（与 systemd worktrace.service 一致）
 REMOTE_DIR=/home/ubuntu/worktrace
 SERVICE=worktrace
-HEALTH_URL=http://127.0.0.1:8080/actuator/health
+HEALTH_URL=http://127.0.0.1:8083/actuator/health
 
 BUILD_ONLY=0
 if [ "${1:-}" = "--build-only" ]; then
