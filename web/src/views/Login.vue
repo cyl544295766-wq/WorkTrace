@@ -242,7 +242,7 @@ function revalidateIfError(prop: 'username' | 'password'): void {
 </template>
 
 <style scoped>
-/* ═══════ 第一阶段：整体布局 + 背景视觉（浅蓝灰渐变 + 柔和蓝色光晕） ═══════ */
+/* ═══════ 第一阶段：整体布局 + 背景视觉（3D 蓝白科技风本地背景图 + 轻微白色遮罩） ═══════ */
 .login-page {
   position: relative;
   min-height: 100vh;
@@ -251,15 +251,13 @@ function revalidateIfError(prop: 'username' | 'password'): void {
   padding: clamp(24px, 6vh, 56px) 24px;
   /* 光晕装饰禁止产生横向滚动条 */
   overflow-x: hidden;
+  /* 3D 背景图：本地静态资源 · cover 适配窗口 · 居中 · 不拉伸变形；
+     第一层为极轻白色遮罩（提升卡片文字对比度，不破坏 3D 质感），直接作为
+     背景图层实现 —— 始终位于内容之下，无层叠/遮挡问题 */
   background:
-    /* 柔和蓝色光晕 · 左上 */
-    radial-gradient(900px 540px at 12% -10%, rgba(96, 145, 240, 0.18), transparent 62%),
-    /* 柔和蓝紫光晕 · 右下（空间层次） */
-    radial-gradient(860px 520px at 90% 110%, rgba(133, 150, 245, 0.15), transparent 64%),
-    /* 中部极淡冷光，让卡片周围更通透 */
-    radial-gradient(760px 460px at 50% 44%, rgba(219, 232, 252, 0.55), transparent 72%),
-    /* 基底：浅蓝灰渐变 */
-    linear-gradient(165deg, #f3f7fd 0%, #e9eef9 52%, #edf2fb 100%);
+    linear-gradient(rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.14)),
+    url('../assets/login-bg.png') center center / cover no-repeat;
+  background-color: #eaf1fb;
 }
 
 /* 登录区域：水平垂直居中 + 舒适留白（卡片本体样式不变） */
