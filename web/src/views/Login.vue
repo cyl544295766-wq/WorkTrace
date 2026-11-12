@@ -60,7 +60,7 @@ watch(mode, () => {
 })
 
 async function handleLogin(): Promise<void> {
-  if (!formRef.value) return
+  if (!formRef.value || loading.value) return // 加载中防重复提交（含 Enter 键路径）
   try {
     await formRef.value.validate()
   } catch {
@@ -98,7 +98,7 @@ async function handleLogin(): Promise<void> {
 
 /** 注册：后端 BCrypt 落库并自动登录（写好会话），体验与登录一致 */
 async function handleRegister(): Promise<void> {
-  if (!formRef.value) return
+  if (!formRef.value || loading.value) return // 加载中防重复提交
   try {
     await formRef.value.validate()
   } catch {
@@ -360,9 +360,79 @@ function revalidateIfError(prop: 'username' | 'password'): void {
   }
 }
 
-.login-btn {
+/* ═══════ 第五阶段：登录按钮视觉升级与交互体验 ═══════ */
+/* 44px / 圆角 8 —— 与输入框完全同规范；轻微品牌蓝纵向渐变（克制） */
+.login-card .login-btn {
   width: 100%;
+  height: 44px;
   margin-top: 4px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #4b95ec 0%, #3988e8 62%, #3580e2 100%);
+  box-shadow: 0 1px 2px rgba(31, 82, 168, 0.16);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: #fff;
+  transition:
+    filter 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+/* Hover：轻微加深 + 上浮 1px + 柔和蓝投影（无放大/弹跳/闪烁） */
+.login-card .login-btn:not(:disabled):hover {
+  filter: brightness(0.94);
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 16px -6px rgba(47, 110, 229, 0.55),
+    0 1px 2px rgba(31, 82, 168, 0.16);
+}
+
+/* Active：轻微下沉反馈，切换更快 */
+.login-card .login-btn:not(:disabled):active {
+  transition-duration: 0.06s;
+  transform: translateY(0);
+  filter: brightness(0.9);
+  box-shadow: 0 1px 3px rgba(31, 82, 168, 0.3);
+}
+
+/* 键盘焦点：清晰但不刺眼的品牌蓝光环 */
+.login-card .login-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 1px 2px rgba(31, 82, 168, 0.16),
+    0 0 0 3px rgba(57, 136, 232, 0.24);
+}
+
+/* 加载 / 禁用态：明确但柔和（去悬停动效，轻微去饱和，尺寸不变） */
+.login-card .login-btn.is-loading,
+.login-card .login-btn:disabled {
+  filter: saturate(0.8);
+  opacity: 0.82;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 0 1px 2px rgba(31, 82, 168, 0.14);
+}
+
+.login-card .login-btn.is-loading:hover,
+.login-card .login-btn:disabled:hover {
+  filter: saturate(0.8);
+  transform: none;
+  box-shadow: 0 1px 2px rgba(31, 82, 168, 0.14);
+}
+
+/* 内部 spinner：白色、与文字基线协调 */
+.login-card .login-btn .el-icon.is-loading {
+  color: #fff;
+  margin-right: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-card .login-btn {
+    transition: none;
+  }
 }
 
 .login-switch {
