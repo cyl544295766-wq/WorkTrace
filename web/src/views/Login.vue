@@ -281,9 +281,9 @@ function revalidateIfError(prop: 'username' | 'password'): void {
     0 28px 60px -28px rgba(37, 60, 112, 0.16);
 }
 
-/* 舒适内距：上 34 / 左右 34 / 下 28（内容区统一，无多余空白） */
+/* 舒适内距：上 34 / 左右 34 / 下 26（底部仅注册入口一行，收紧更协调） */
 .login-card :deep(.el-card__body) {
-  padding: 34px 34px 28px;
+  padding: 34px 34px 26px;
 }
 
 /* 品牌区 → 表单 → 底部辅助信息的节奏微调（仅间距，不改内容） */
@@ -432,11 +432,25 @@ function revalidateIfError(prop: 'username' | 'password'): void {
   }
 }
 
+/* ═══════ 第六阶段：注册入口与底部布局（无演示账号，保持简洁专业） ═══════ */
 .login-switch {
-  margin: 18px 0 0;
-  color: var(--el-text-color-secondary);
+  margin: 20px 0 0;
+  color: #7b8aa6;
   font-size: 13px;
+  letter-spacing: 0.02em;
   text-align: center;
+}
+
+/* 「去注册 / 去登录」：品牌蓝 + 600 字重，悬停轻微加深（复用现有 el-link 跳转逻辑） */
+.login-switch .el-link {
+  margin-left: 2px;
+  font-weight: 600;
+  color: #3988e8;
+  transition: color 0.18s ease;
+}
+
+.login-switch .el-link:hover {
+  color: #2a6fd0;
 }
 
 /* ═══════ 第四阶段：输入框视觉与表单交互 ═══════ */
@@ -531,5 +545,26 @@ function revalidateIfError(prop: 'username' | 'password'): void {
 /* 输入错误态：柔和红边框 + 极淡红光（覆盖聚焦蓝） */
 .login-card :deep(.el-form-item.is-error .el-input__wrapper) {
   box-shadow: 0 0 0 1.5px #e88a8a inset, 0 0 0 3px rgba(230, 110, 110, 0.1);
+}
+
+/* ═══════ 第六阶段：响应式适配 ═══════ */
+/* 手机端（≤480px）：卡片 100%-32px · 上限 420px · 内距收紧 · 背景焦点右移
+   —— 竖屏 cover 横向裁切大，把可见窗右移让右上角 3D 勾选元素可见（呼应品牌 Logo），
+   内容高于视口时 flex 容器自然增长、允许垂直滚动 */
+@media (max-width: 480px) {
+  .login-page {
+    padding: 24px 16px;
+    /* 两层背景分别定位：遮罩层居中 · 背景图焦点 88% 50% */
+    background-position: center, 88% 50%;
+  }
+
+  .login-card {
+    width: 100%;
+    max-width: 420px;
+  }
+
+  .login-card :deep(.el-card__body) {
+    padding: 28px 22px 22px;
+  }
 }
 </style>
