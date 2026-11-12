@@ -39,7 +39,7 @@ const C = {
   orange: '#FFA63D',
   purple: '#7C6CF0',
   text: '#24324A',
-  muted: '#8997AC',
+  muted: '#6B7A91', // 次级文字加深：图表轴标/图例对比度提升
 }
 
 /** 任务行（首页只用到这些字段；口径与后端 BizTask 一致） */
@@ -148,7 +148,7 @@ const kpis = computed(() => [
     icon: List,
     color: C.blue,
     soft: C.blueSoft,
-    glow: 'rgba(57, 120, 246, 0.34)',
+    glow: 'rgba(57, 120, 246, 0.24)',
     bars: [14, 22, 16, 30, 20, 34, 24, 38],
   },
   {
@@ -158,7 +158,7 @@ const kpis = computed(() => [
     icon: VideoPlay,
     color: C.teal,
     soft: C.blueSoft,
-    glow: 'rgba(32, 197, 193, 0.32)',
+    glow: 'rgba(32, 197, 193, 0.22)',
     bars: [20, 14, 26, 18, 32, 22, 36, 26],
   },
   {
@@ -168,7 +168,7 @@ const kpis = computed(() => [
     icon: CircleCheck,
     color: C.green,
     soft: '#7BE0B4',
-    glow: 'rgba(37, 185, 120, 0.30)',
+    glow: 'rgba(37, 185, 120, 0.20)',
     bars: [12, 20, 28, 18, 34, 24, 38, 30],
   },
   {
@@ -178,7 +178,7 @@ const kpis = computed(() => [
     icon: Clock,
     color: C.orange,
     soft: '#FFD39A',
-    glow: 'rgba(255, 166, 61, 0.32)',
+    glow: 'rgba(255, 166, 61, 0.22)',
     bars: [24, 16, 30, 20, 36, 26, 40, 32],
   },
 ])
@@ -221,14 +221,16 @@ function prefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
+/** 玻璃拟态 Tooltip（趋势 / 环形共用）：更通透的毛玻璃 + 柔和投影 */
 const glassTooltip = {
-  backgroundColor: 'rgba(255, 255, 255, 0.82)',
-  borderColor: 'rgba(255, 255, 255, 0.92)',
+  backgroundColor: 'rgba(255, 255, 255, 0.78)',
+  borderColor: 'rgba(255, 255, 255, 0.9)',
   borderWidth: 1,
-  padding: [10, 14],
-  textStyle: { color: C.text, fontSize: 12 },
+  padding: [11, 15],
+  textStyle: { color: C.text, fontSize: 12.5 },
   extraCssText:
-    'backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-radius: 14px; box-shadow: 0 18px 42px -18px rgba(36, 50, 74, 0.35);',
+    'backdrop-filter: blur(18px) saturate(1.4); -webkit-backdrop-filter: blur(18px) saturate(1.4);'
+    + 'border-radius: 14px; box-shadow: 0 20px 44px -20px rgba(36, 50, 74, 0.3), 0 2px 8px rgba(36, 50, 74, 0.06);',
 }
 
 function renderTrend(): void {
@@ -250,7 +252,7 @@ function renderTrend(): void {
       itemWidth: 8,
       itemHeight: 8,
       itemGap: 18,
-      textStyle: { color: C.muted, fontSize: 12 },
+      textStyle: { color: C.muted, fontSize: 13 },
     },
     grid: { left: 6, right: 16, top: 44, bottom: 6, containLabel: true },
     tooltip: {
@@ -298,8 +300,8 @@ function renderTrend(): void {
           color: C.blue,
           borderColor: '#fff',
           borderWidth: 2,
-          shadowBlur: 10,
-          shadowColor: 'rgba(57, 120, 246, 0.55)',
+          shadowBlur: 12,
+          shadowColor: 'rgba(57, 120, 246, 0.45)',
         },
         areaStyle: {
           color: {
@@ -309,7 +311,8 @@ function renderTrend(): void {
             x2: 0,
             y2: 1,
             colorStops: [
-              { offset: 0, color: 'rgba(57, 120, 246, 0.26)' },
+              { offset: 0, color: 'rgba(57, 120, 246, 0.30)' },
+              { offset: 0.55, color: 'rgba(57, 120, 246, 0.11)' },
               { offset: 1, color: 'rgba(57, 120, 246, 0.01)' },
             ],
           },
@@ -328,8 +331,8 @@ function renderTrend(): void {
           color: C.green,
           borderColor: '#fff',
           borderWidth: 2,
-          shadowBlur: 8,
-          shadowColor: 'rgba(37, 185, 120, 0.45)',
+          shadowBlur: 10,
+          shadowColor: 'rgba(37, 185, 120, 0.38)',
         },
         lineStyle: {
           width: 2.5,
@@ -346,7 +349,8 @@ function renderTrend(): void {
             x2: 0,
             y2: 1,
             colorStops: [
-              { offset: 0, color: 'rgba(37, 185, 120, 0.10)' },
+              { offset: 0, color: 'rgba(37, 185, 120, 0.16)' },
+              { offset: 0.6, color: 'rgba(37, 185, 120, 0.05)' },
               { offset: 1, color: 'rgba(37, 185, 120, 0.00)' },
             ],
           },
@@ -457,20 +461,20 @@ function renderDonut(): void {
         avoidLabelOverlap: true,
         selectedMode: false,
         itemStyle: {
-          borderColor: 'rgba(255, 255, 255, 0.92)',
+          borderColor: 'rgba(255, 255, 255, 0.95)',
           borderWidth: 3,
           borderRadius: activeSectors > 1 ? 9 : 0,
-          shadowBlur: 22,
-          shadowColor: 'rgba(36, 50, 74, 0.14)',
-          shadowOffsetY: 10,
+          shadowBlur: 18,
+          shadowColor: 'rgba(36, 50, 74, 0.12)',
+          shadowOffsetY: 8,
         },
         emphasis: {
           scale: true,
           scaleSize: 7,
           itemStyle: {
-            shadowBlur: 28,
-            shadowColor: 'rgba(36, 50, 74, 0.22)',
-            shadowOffsetY: 10,
+            shadowBlur: 24,
+            shadowColor: 'rgba(36, 50, 74, 0.2)',
+            shadowOffsetY: 8,
           },
         },
         label: { show: false },
@@ -597,34 +601,51 @@ async function loadInsight(): Promise<void> {
 /** 展示优先级：AI 洞察 > 本地规则兜底 */
 const activeInsight = computed(() => aiInsight.value ?? fallbackInsight.value)
 
-/* ── AI 报告中心入口（带 type 预选跳转报告页） ── */
+/** 洞察面板的关键数据条：全部由已加载任务派生（无新增接口），用于分层展示与重点着色 */
+const insightStats = computed(() => {
+  const t = total.value
+  const rate = t ? Math.round((done.value / t) * 100) : 0
+  const today = dateKey(new Date())
+  const todayNew = tasks.value.filter((t2) => t2.createTime && dateKey(new Date(t2.createTime)) === today).length
+  const keyCount = tasks.value.filter((t2) => t2.isKey === 1).length
+  return [
+    { label: '完成率', value: `${rate}%`, color: '#25B978' },
+    { label: '今日新增', value: `${todayNew}`, color: '#3978F6' },
+    { label: '重点任务', value: `${keyCount}`, color: '#FF8A3D' },
+  ]
+})
+
+/* ── AI 报告中心入口（带 type 预选跳转报告页；文案只描述已有的日/周/月报能力） ── */
 const reportTiles = [
   {
     label: '日报',
-    sub: '今日工作总结',
+    sub: '今日完成与明日重点，精简输出',
+    cta: '生成日报',
     type: 'DAILY',
     icon: Document,
     color: C.blue,
     soft: C.blueSoft,
-    glow: 'rgba(57, 120, 246, 0.26)',
+    glow: 'rgba(57, 120, 246, 0.18)',
   },
   {
     label: '周报',
-    sub: '本周工作复盘',
+    sub: '本周完成情况与下周计划',
+    cta: '生成周报',
     type: 'WEEKLY',
     icon: Calendar,
     color: C.teal,
     soft: '#8FF3EE',
-    glow: 'rgba(32, 197, 193, 0.26)',
+    glow: 'rgba(32, 197, 193, 0.18)',
   },
   {
     label: '月报',
-    sub: '本月成果分析',
+    sub: '整月成果、问题与后续规划',
+    cta: '生成月报',
     type: 'MONTHLY',
     icon: TrendCharts,
     color: C.purple,
     soft: '#B9AEFF',
-    glow: 'rgba(124, 108, 240, 0.26)',
+    glow: 'rgba(124, 108, 240, 0.18)',
   },
 ]
 
@@ -804,7 +825,7 @@ onBeforeUnmount(() => {
       <article
         v-for="(k, i) in kpis"
         :key="k.label"
-        v-tilt="{ max: 3.5 }"
+        v-tilt="{ max: 2.2 }"
         class="kpi reveal"
         :style="{
           '--i': i + 1,
@@ -877,7 +898,7 @@ onBeforeUnmount(() => {
                 />
                 <span class="name">{{ s.name }}</span>
                 <span class="num">{{ s.value }}</span>
-                <span class="pct">{{ s.pct }}%</span>
+                <span class="pct"><b>{{ s.pct }}</b>%</span>
               </div>
               <span class="legend-track">
                 <i
@@ -961,6 +982,19 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <h4 class="ai-panel__headline">{{ activeInsight.headline }}</h4>
+              <!-- 关键数据条：分层展示，数字用主题色强调（数据全部来自已加载任务） -->
+              <div class="ai-stats" role="list">
+                <div
+                  v-for="s in insightStats"
+                  :key="s.label"
+                  role="listitem"
+                  class="ai-stat"
+                  :style="{ '--stat': s.color }"
+                >
+                  <strong>{{ s.value }}</strong>
+                  <span>{{ s.label }}</span>
+                </div>
+              </div>
               <p class="ai-panel__para">{{ activeInsight.para }}</p>
               <div class="ai-advice">
                 <span class="ai-advice__icon"><el-icon :size="15"><Sunny /></el-icon></span>
@@ -983,7 +1017,7 @@ onBeforeUnmount(() => {
           <div
             v-for="(t, i) in reportTiles"
             :key="t.type"
-            v-tilt="{ max: 5 }"
+            v-tilt="{ max: 3 }"
             class="tile reveal"
             role="button"
             tabindex="0"
@@ -999,14 +1033,15 @@ onBeforeUnmount(() => {
           >
             <span class="tile__badge">
               <span class="tile__badge-orb">
-                <el-icon :size="22"><component :is="t.icon" /></el-icon>
+                <el-icon :size="24"><component :is="t.icon" /></el-icon>
               </span>
             </span>
             <div class="tile__text">
               <p class="tile__name">{{ t.label }}</p>
               <p class="tile__sub">{{ t.sub }}</p>
             </div>
-            <span class="tile__arrow" aria-hidden="true">↗</span>
+            <span class="tile__divider" aria-hidden="true" />
+            <span class="tile__cta">{{ t.cta }}<i aria-hidden="true">→</i></span>
           </div>
         </div>
       </div>
@@ -1023,31 +1058,33 @@ onBeforeUnmount(() => {
 .home-page {
   --bg: #f2f5fb;
   --text: #24324a;
-  --muted: #8997ac;
+  --muted: #6b7a91; /* 次级文字：对比度提升一档，长文阅读更省力 */
   --primary: #3978f6;
   --cyan: #20c5c1;
   --green: #25b978;
   --orange: #ffa63d;
   --violet: #7c6cf0;
-  --radius: 22px;
+  --radius: 20px; /* 外层卡片统一圆角 */
+  --radius-md: 16px; /* 卡片内嵌面板 / 入口卡统一圆角 */
+  /* 阴影规范：整体强度较上一版下调约 20%，并削弱卡片底部蓝色光晕 */
   --shadow-card:
-    0 1px 0 rgba(255, 255, 255, 0.96) inset,
-    inset 0 -1px 0 rgba(120, 168, 255, 0.1),
-    inset 0 -22px 36px -32px rgba(57, 120, 246, 0.25),
-    0 1px 2px rgba(36, 50, 74, 0.05),
-    0 12px 26px -16px rgba(36, 50, 74, 0.32),
-    0 30px 60px -36px rgba(57, 120, 246, 0.28);
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    inset 0 -1px 0 rgba(120, 168, 255, 0.08),
+    inset 0 -20px 34px -32px rgba(57, 120, 246, 0.14),
+    0 1px 2px rgba(36, 50, 74, 0.04),
+    0 10px 22px -16px rgba(36, 50, 74, 0.26),
+    0 26px 52px -36px rgba(57, 120, 246, 0.2);
   --shadow-hover:
-    0 1px 0 rgba(255, 255, 255, 0.98) inset,
-    inset 0 -22px 36px -32px rgba(57, 120, 246, 0.28),
-    0 2px 4px rgba(36, 50, 74, 0.05),
-    0 18px 34px -18px rgba(36, 50, 74, 0.36),
-    0 40px 78px -40px rgba(57, 120, 246, 0.36);
+    0 1px 0 rgba(255, 255, 255, 0.96) inset,
+    inset 0 -20px 34px -32px rgba(57, 120, 246, 0.16),
+    0 2px 4px rgba(36, 50, 74, 0.04),
+    0 16px 30px -18px rgba(36, 50, 74, 0.3),
+    0 34px 66px -40px rgba(57, 120, 246, 0.26);
 
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-rows: auto auto minmax(280px, 1fr) minmax(320px, 1fr);
+  grid-template-rows: auto auto auto auto; /* 行高由内容决定，图表行不再被底部行撑高 */
   gap: 18px;
   width: 100%;
   flex: 1 0 auto;
@@ -1059,10 +1096,10 @@ onBeforeUnmount(() => {
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
   background:
-    radial-gradient(1100px 620px at 7% -8%, rgba(120, 168, 255, 0.26), transparent 62%),
-    radial-gradient(900px 560px at 96% 2%, rgba(32, 197, 193, 0.17), transparent 62%),
-    radial-gradient(820px 460px at 46% 44%, rgba(120, 168, 255, 0.08), transparent 70%),
-    radial-gradient(720px 520px at 48% 108%, rgba(124, 108, 240, 0.07), transparent 64%),
+    radial-gradient(1100px 620px at 7% -8%, rgba(120, 168, 255, 0.2), transparent 62%),
+    radial-gradient(900px 560px at 96% 2%, rgba(32, 197, 193, 0.13), transparent 62%),
+    radial-gradient(820px 460px at 46% 44%, rgba(120, 168, 255, 0.06), transparent 70%),
+    radial-gradient(720px 520px at 48% 108%, rgba(124, 108, 240, 0.05), transparent 64%),
     var(--bg);
 }
 
@@ -1084,7 +1121,7 @@ onBeforeUnmount(() => {
   position: absolute;
   border-radius: 50%;
   filter: blur(70px);
-  opacity: 0.55;
+  opacity: 0.42;
   transform: translate3d(calc(var(--px, 0) * 22px), calc(var(--py, 0) * 18px), 0);
   transition: transform 0.45s ease-out;
   will-change: transform, translate;
@@ -1095,7 +1132,7 @@ onBeforeUnmount(() => {
   height: 380px;
   top: -110px;
   left: -70px;
-  background: radial-gradient(circle, rgba(120, 168, 255, 0.45), transparent 68%);
+  background: radial-gradient(circle, rgba(120, 168, 255, 0.34), transparent 68%);
   animation: blobFloat 18s ease-in-out infinite alternate;
 }
 
@@ -1104,7 +1141,7 @@ onBeforeUnmount(() => {
   height: 330px;
   top: 240px;
   right: -90px;
-  background: radial-gradient(circle, rgba(32, 197, 193, 0.42), transparent 68%);
+  background: radial-gradient(circle, rgba(32, 197, 193, 0.3), transparent 68%);
   animation: blobFloat 22s ease-in-out infinite alternate-reverse;
 }
 
@@ -1113,15 +1150,15 @@ onBeforeUnmount(() => {
   height: 280px;
   bottom: 3%;
   left: 42%;
-  background: radial-gradient(circle, rgba(255, 166, 61, 0.18), transparent 70%);
+  background: radial-gradient(circle, rgba(255, 166, 61, 0.13), transparent 70%);
   animation: blobFloat 26s ease-in-out infinite alternate;
 }
 
 .home-bg__grid {
   position: absolute;
   inset: 0;
-  opacity: 0.5;
-  background-image: radial-gradient(circle, rgba(57, 120, 246, 0.055) 1px, transparent 1px);
+  opacity: 0.4;
+  background-image: radial-gradient(circle, rgba(57, 120, 246, 0.05) 1px, transparent 1px);
   background-size: 26px 26px;
   -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.65), transparent 72%);
   mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.65), transparent 72%);
@@ -1152,8 +1189,8 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(227, 235, 247, 0.9);
   border-radius: var(--radius);
   background:
-    radial-gradient(520px 260px at 100% 0%, rgba(120, 168, 255, 0.09), transparent 70%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.72) 100%);
+    radial-gradient(520px 260px at 100% 0%, rgba(120, 168, 255, 0.07), transparent 70%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.68) 100%);
   box-shadow: var(--shadow-card);
   backdrop-filter: blur(18px) saturate(1.08);
   -webkit-backdrop-filter: blur(18px) saturate(1.08);
@@ -1165,7 +1202,7 @@ onBeforeUnmount(() => {
 }
 
 .card:hover {
-  border-color: rgba(255, 255, 255, 0.98);
+  border-color: rgba(255, 255, 255, 0.9);
   box-shadow: var(--shadow-hover);
   will-change: transform;
 }
@@ -1200,17 +1237,17 @@ onBeforeUnmount(() => {
   height: 18px;
   border-radius: 999px;
   background: linear-gradient(180deg, #8fb8ff, #3978f6);
-  box-shadow: 0 0 14px rgba(57, 120, 246, 0.45);
+  box-shadow: 0 0 10px rgba(57, 120, 246, 0.3);
 }
 
 .title-bar--teal {
   background: linear-gradient(180deg, #8ff3ee, #20c5c1);
-  box-shadow: 0 0 14px rgba(32, 197, 193, 0.42);
+  box-shadow: 0 0 10px rgba(32, 197, 193, 0.28);
 }
 
 .title-bar--violet {
   background: linear-gradient(180deg, #c4bcff, #7c6cf0);
-  box-shadow: 0 0 14px rgba(124, 108, 240, 0.42);
+  box-shadow: 0 0 10px rgba(124, 108, 240, 0.28);
 }
 
 .title-bar--sm {
@@ -1246,15 +1283,15 @@ onBeforeUnmount(() => {
   padding: 26px 30px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.9);
-  border-radius: 24px;
+  border-radius: var(--radius);
   background:
-    radial-gradient(620px 280px at 82% 18%, rgba(32, 197, 193, 0.12), transparent 62%),
-    radial-gradient(720px 320px at 12% 0%, rgba(120, 168, 255, 0.22), transparent 64%),
+    radial-gradient(620px 280px at 82% 18%, rgba(32, 197, 193, 0.1), transparent 62%),
+    radial-gradient(720px 320px at 12% 0%, rgba(120, 168, 255, 0.18), transparent 64%),
     linear-gradient(115deg, #f8fbff 0%, #eaf2ff 48%, #e9f8f7 100%);
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.95) inset,
-    0 24px 50px -30px rgba(36, 50, 74, 0.26),
-    0 12px 28px -20px rgba(57, 120, 246, 0.24);
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 20px 42px -30px rgba(36, 50, 74, 0.24),
+    0 10px 24px -20px rgba(57, 120, 246, 0.18);
 }
 
 .banner__waves {
@@ -1392,8 +1429,7 @@ onBeforeUnmount(() => {
   color: #78a8ff;
   font-size: 18px;
   line-height: 1;
-  text-shadow: 0 0 14px rgba(57, 120, 246, 0.5);
-  animation: sparkle 3.2s ease-in-out infinite;
+  text-shadow: 0 0 12px rgba(57, 120, 246, 0.35);
 }
 
 .banner__sub {
@@ -1450,7 +1486,7 @@ onBeforeUnmount(() => {
 
 .banner__date .date-sub {
   margin: 2px 0 0;
-  color: #8997ac;
+  color: #6b7a91;
   font-size: 11.5px;
   line-height: 1.3;
 }
@@ -1546,15 +1582,15 @@ onBeforeUnmount(() => {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 16px;
   min-height: 126px;
-  padding: 20px 20px 20px 18px;
+  padding: 20px;
   overflow: hidden;
   border: 1px solid rgba(227, 235, 247, 0.9);
-  border-radius: 20px;
+  border-radius: var(--radius);
   background:
     radial-gradient(190px 130px at 100% 0%, var(--glow), transparent 72%),
-    linear-gradient(150deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.7));
+    linear-gradient(150deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.66));
   box-shadow: var(--shadow-card);
   backdrop-filter: blur(16px) saturate(1.08);
   -webkit-backdrop-filter: blur(16px) saturate(1.08);
@@ -1574,7 +1610,7 @@ onBeforeUnmount(() => {
   border-radius: inherit;
   background: radial-gradient(
     190px circle at var(--mx, 50%) var(--my, 50%),
-    rgba(255, 255, 255, 0.78),
+    rgba(255, 255, 255, 0.55),
     transparent 62%
   );
   opacity: 0;
@@ -1583,12 +1619,12 @@ onBeforeUnmount(() => {
 }
 
 .kpi:hover {
-  --lift: -6px;
-  border-color: rgba(255, 255, 255, 1);
+  --lift: -5px;
+  border-color: rgba(255, 255, 255, 0.95);
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.96) inset,
-    0 30px 58px -28px rgba(36, 50, 74, 0.34),
-    0 16px 32px -18px var(--glow);
+    0 1px 0 rgba(255, 255, 255, 0.92) inset,
+    0 24px 46px -26px rgba(36, 50, 74, 0.3),
+    0 12px 26px -18px var(--glow);
   will-change: transform;
 }
 
@@ -1601,14 +1637,14 @@ onBeforeUnmount(() => {
   flex: none;
   display: grid;
   place-items: center;
-  width: 58px;
-  height: 58px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(232, 240, 252, 0.68));
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(232, 240, 252, 0.62));
   box-shadow:
     inset 0 1px 0 #fff,
     inset 0 -1px 0 rgba(120, 168, 255, 0.12),
-    0 12px 22px -14px var(--glow);
+    0 8px 18px -14px rgba(36, 50, 74, 0.24);
 }
 
 .kpi__icon-wrap::after {
@@ -1631,7 +1667,7 @@ onBeforeUnmount(() => {
   box-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.72),
     inset 0 -3px 6px rgba(20, 40, 80, 0.16),
-    0 8px 16px -8px var(--glow);
+    0 6px 14px -8px var(--glow);
 }
 
 .kpi:hover .kpi__orb {
@@ -1645,27 +1681,28 @@ onBeforeUnmount(() => {
 
 .kpi__label {
   margin: 0;
-  color: #5b6b82;
-  font-size: 12.5px;
-  font-weight: 650;
+  color: #44546c;
+  font-size: 13px;
+  font-weight: 700;
   letter-spacing: 0.02em;
 }
 
 .kpi__value {
-  margin: 2px 0 3px;
-  color: #24324a;
-  font-size: 40px;
+  margin: 3px 0 4px;
+  color: #1f2d43;
+  font-size: 44px;
   font-weight: 800;
-  line-height: 1.05;
-  letter-spacing: -0.04em;
+  line-height: 1;
+  letter-spacing: -0.045em;
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 2px 10px rgba(36, 50, 74, 0.06);
+  text-shadow: 0 2px 10px rgba(36, 50, 74, 0.05);
 }
 
 .kpi__hint {
   margin: 0;
-  color: #8997ac;
+  color: #74839a;
   font-size: 11.5px;
+  font-weight: 500;
 }
 
 .kpi__bars {
@@ -1673,7 +1710,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  height: 46px;
+  height: 48px;
   margin-left: auto;
   padding-bottom: 2px;
 }
@@ -1682,12 +1719,12 @@ onBeforeUnmount(() => {
   position: relative;
   width: 6px;
   border-radius: 4px 4px 3px 3px;
-  background: linear-gradient(180deg, var(--accent-soft), var(--accent));
+  background: linear-gradient(180deg, var(--accent-soft) 0%, var(--accent) 68%, var(--accent) 100%);
   box-shadow:
-    inset 1px 0 0 rgba(255, 255, 255, 0.5),
+    inset 1px 0 0 rgba(255, 255, 255, 0.55),
     inset -3px 0 4px rgba(20, 40, 80, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.65),
-    2px 5px 8px -3px var(--glow);
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    1px 4px 7px -3px var(--glow);
   transform-origin: bottom;
   transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
   transition-delay: var(--bar-delay, 0ms);
@@ -1701,7 +1738,7 @@ onBeforeUnmount(() => {
   right: 1px;
   height: 3px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.5);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.25));
 }
 
 .kpi:hover .kpi__bar {
@@ -1713,7 +1750,7 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 1.65fr 1fr;
   gap: 18px;
-  min-height: 300px;
+  min-height: 340px;
 }
 
 .trend,
@@ -1725,14 +1762,14 @@ onBeforeUnmount(() => {
 
 .trend {
   background:
-    radial-gradient(600px 300px at 0% 0%, rgba(57, 120, 246, 0.09), transparent 62%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(255, 255, 255, 0.8));
+    radial-gradient(600px 300px at 0% 0%, rgba(57, 120, 246, 0.07), transparent 62%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.74));
 }
 
 .donut {
   background:
-    radial-gradient(520px 300px at 100% 0%, rgba(32, 197, 193, 0.1), transparent 62%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(255, 255, 255, 0.8));
+    radial-gradient(520px 300px at 100% 0%, rgba(32, 197, 193, 0.08), transparent 62%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.74));
 }
 
 .range-pills {
@@ -1795,9 +1832,32 @@ onBeforeUnmount(() => {
   min-height: 200px;
 }
 
+/* 环形边缘高光：只在圆环带内叠一层斜向玻璃反光，中心数字不受影响 */
+.donut__chart-wrap::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 60% 50% at 32% 20%,
+    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0) 70%
+  );
+  -webkit-mask-image: radial-gradient(
+    circle at 50% 50%,
+    transparent 56%,
+    #000 60%,
+    #000 88%,
+    transparent 93%
+  );
+  mask-image: radial-gradient(circle at 50% 50%, transparent 56%, #000 60%, #000 88%, transparent 93%);
+}
+
 .donut__chart {
   position: absolute;
   inset: 0;
+  z-index: 0;
   width: 100%;
   height: 100%;
 }
@@ -1806,28 +1866,30 @@ onBeforeUnmount(() => {
   position: absolute;
   left: 50%;
   top: 50%;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1px;
+  gap: 2px;
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
 
 .donut__center strong {
-  color: #24324a;
-  font-size: 40px;
+  color: #1f2d43;
+  font-size: 46px;
   font-weight: 800;
   line-height: 1;
   letter-spacing: -0.05em;
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 4px 14px rgba(57, 120, 246, 0.18);
+  text-shadow: 0 4px 16px rgba(57, 120, 246, 0.14);
 }
 
 .donut__center span {
-  color: #8997ac;
-  font-size: 11.5px;
-  letter-spacing: 0.05em;
+  color: #74839a;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
 }
 
 .donut__legend {
@@ -1835,7 +1897,7 @@ onBeforeUnmount(() => {
   align-self: center;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 15px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1849,10 +1911,10 @@ onBeforeUnmount(() => {
 
 .donut__legend-row {
   display: grid;
-  grid-template-columns: 12px 1fr auto 48px;
+  grid-template-columns: 12px 1fr auto 52px;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  gap: 10px;
+  font-size: 13.5px;
 }
 
 .donut__legend .dot {
@@ -1862,34 +1924,44 @@ onBeforeUnmount(() => {
 }
 
 .donut__legend .name {
-  color: #5b6b82;
-  font-weight: 600;
+  color: #44546c;
+  font-weight: 650;
 }
 
 .donut__legend .num {
-  color: #24324a;
-  font-weight: 750;
+  color: #1f2d43;
+  font-size: 14.5px;
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
 
 .donut__legend .pct {
-  color: #8997ac;
+  color: #74839a;
+  font-size: 12px;
+  font-weight: 600;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
+.donut__legend .pct b {
+  color: #44546c;
+  font-size: 13.5px;
+  font-weight: 750;
+  margin-right: -1.5px;
+}
+
 .legend-track {
-  height: 5px;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(137, 151, 172, 0.12);
+  background: rgba(137, 151, 172, 0.14);
 }
 
 .legend-track i {
   display: block;
   height: 100%;
   border-radius: inherit;
-  box-shadow: 0 0 10px rgba(57, 120, 246, 0.18);
+  box-shadow: 0 0 8px rgba(57, 120, 246, 0.14);
   transition: width 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
@@ -1910,14 +1982,14 @@ onBeforeUnmount(() => {
 
 .merged {
   background:
-    radial-gradient(560px 300px at 0% 0%, rgba(120, 168, 255, 0.08), transparent 62%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(255, 255, 255, 0.8));
+    radial-gradient(560px 300px at 0% 0%, rgba(120, 168, 255, 0.06), transparent 62%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.74));
 }
 
 .reports {
   background:
-    radial-gradient(520px 300px at 100% 0%, rgba(124, 108, 240, 0.1), transparent 62%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(255, 255, 255, 0.8));
+    radial-gradient(520px 300px at 100% 0%, rgba(124, 108, 240, 0.07), transparent 62%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.74));
 }
 
 .merged__body {
@@ -1943,10 +2015,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   color: #24324a;
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 750;
+  letter-spacing: -0.01em;
 }
 
 .ai-sub-icon {
@@ -1981,7 +2054,7 @@ onBeforeUnmount(() => {
   flex: 1;
   flex-direction: column;
   justify-content: center;
-  gap: 6px;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1990,10 +2063,10 @@ onBeforeUnmount(() => {
 .today__row {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 10px;
+  gap: 12px;
+  padding: 11px 12px;
   border: 1px solid transparent;
-  border-radius: 13px;
+  border-radius: 14px;
   transition:
     background 0.25s ease,
     border-color 0.25s ease,
@@ -2003,8 +2076,8 @@ onBeforeUnmount(() => {
 
 .today__row:hover {
   border-color: rgba(255, 255, 255, 0.9);
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: 0 8px 18px -14px rgba(36, 50, 74, 0.25);
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: 0 8px 18px -14px rgba(36, 50, 74, 0.22);
   transform: translateX(2px);
 }
 
@@ -2012,31 +2085,36 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   flex: none;
-  width: 20px;
-  height: 20px;
+  width: 21px;
+  height: 21px;
   padding: 0;
-  border: 1.5px solid rgba(137, 151, 172, 0.35);
+  border: 1.5px solid rgba(137, 151, 172, 0.42);
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.7);
   color: #fff;
   cursor: pointer;
   box-shadow: inset 0 1px 0 #fff;
   transition:
     border-color 0.18s ease,
     background 0.18s ease,
-    box-shadow 0.18s ease;
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
 }
 
 .check:hover {
   border-color: #20c5c1;
-  box-shadow: 0 0 0 4px rgba(32, 197, 193, 0.1);
+  box-shadow: 0 0 0 4px rgba(32, 197, 193, 0.14);
+}
+
+.check:active {
+  transform: scale(0.88);
 }
 
 .check.done {
   border-color: transparent;
   background: linear-gradient(145deg, #8ff3ee, #20c5c1);
   box-shadow:
-    0 4px 10px -4px rgba(32, 197, 193, 0.55),
+    0 4px 10px -6px rgba(32, 197, 193, 0.5),
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
@@ -2045,7 +2123,10 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow: hidden;
   color: #24324a;
-  font-size: 14px;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
@@ -2057,11 +2138,24 @@ onBeforeUnmount(() => {
 
 .tag {
   flex: none;
-  padding: 3px 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
   border: 1px solid transparent;
   border-radius: 999px;
   font-size: 11.5px;
-  font-weight: 650;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.tag::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.75;
 }
 
 .tag--doing {
@@ -2084,9 +2178,10 @@ onBeforeUnmount(() => {
 
 .today__row .date {
   flex: none;
-  width: 44px;
-  color: #8997ac;
-  font-size: 11.5px;
+  width: 46px;
+  color: #74839a;
+  font-size: 12px;
+  font-weight: 600;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -2191,7 +2286,7 @@ onBeforeUnmount(() => {
 
 .empty-focus__hint {
   margin: 0;
-  color: #8997ac;
+  color: #6b7a91;
   font-size: 12px;
   line-height: 1.6;
 }
@@ -2225,23 +2320,24 @@ onBeforeUnmount(() => {
   display: flex;
   flex: 1;
   flex-direction: column;
-  padding: 18px;
+  padding: 20px;
   overflow: hidden;
   border: 1px solid transparent;
-  border-radius: 18px;
+  border-radius: var(--radius-md);
   background:
-    linear-gradient(150deg, rgba(240, 255, 254, 0.86), rgba(255, 255, 255, 0.62) 48%, rgba(237, 245, 255, 0.82))
+    linear-gradient(150deg, rgba(240, 255, 254, 0.84), rgba(255, 255, 255, 0.58) 48%, rgba(237, 245, 255, 0.8))
       padding-box,
-    linear-gradient(135deg, rgba(32, 197, 193, 0.45), rgba(255, 255, 255, 0.7) 40%, rgba(57, 120, 246, 0.32))
+    linear-gradient(135deg, rgba(32, 197, 193, 0.4), rgba(255, 255, 255, 0.7) 40%, rgba(57, 120, 246, 0.28))
       border-box;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 22px 44px -30px rgba(32, 197, 193, 0.4),
-    0 10px 24px -20px rgba(57, 120, 246, 0.28);
+    0 18px 36px -28px rgba(32, 197, 193, 0.3),
+    0 8px 20px -18px rgba(57, 120, 246, 0.2);
   backdrop-filter: blur(18px) saturate(1.15);
   -webkit-backdrop-filter: blur(18px) saturate(1.15);
 }
 
+/* 静态柔光：不再做周期性明暗变化，避免与其它动画抢注意力 */
 .ai-panel__glow {
   position: absolute;
   top: -80px;
@@ -2249,10 +2345,9 @@ onBeforeUnmount(() => {
   width: 200px;
   height: 200px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(32, 197, 193, 0.28), transparent 68%);
+  background: radial-gradient(circle, rgba(32, 197, 193, 0.22), transparent 68%);
   filter: blur(8px);
   pointer-events: none;
-  animation: aiGlow 8s ease-in-out infinite alternate;
 }
 
 .ai-panel__head {
@@ -2260,49 +2355,48 @@ onBeforeUnmount(() => {
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 13px;
 }
 
+/* 3D 发光晶体：多面渐变球体 + 高光 + 内圈，作为模块的视觉锚点 */
 .ai-orb {
   position: relative;
   display: grid;
   flex: none;
   place-items: center;
-  width: 48px;
-  height: 48px;
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
-  background: radial-gradient(
-    circle at 32% 26%,
-    #c8fffb,
-    #5be0dc 30%,
-    #20c5c1 56%,
-    #3978f6 100%
-  );
+  background:
+    radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0) 44%),
+    conic-gradient(from 205deg at 50% 50%, #7cf0eb, #20c5c1 30%, #3978f6 66%, #a7ecff 100%);
   box-shadow:
-    inset 0 2px 3px rgba(255, 255, 255, 0.75),
-    inset 0 -6px 10px rgba(17, 90, 120, 0.25),
-    0 12px 22px -10px rgba(32, 197, 193, 0.6);
-  animation: aiFloat 5s ease-in-out infinite;
+    inset 0 2px 4px rgba(255, 255, 255, 0.7),
+    inset 0 -8px 14px rgba(16, 64, 110, 0.28),
+    0 14px 26px -14px rgba(32, 197, 193, 0.5),
+    0 0 0 6px rgba(32, 197, 193, 0.07);
+  animation: aiFloat 6s ease-in-out infinite;
 }
 
 .ai-orb__ring {
   position: absolute;
-  inset: -5px;
-  border: 1px solid rgba(32, 197, 193, 0.28);
+  inset: -6px;
+  border: 1px solid rgba(32, 197, 193, 0.3);
   border-radius: 50%;
-  box-shadow: 0 0 18px rgba(32, 197, 193, 0.25);
-  animation: orbRing 6s ease-in-out infinite;
+  box-shadow: 0 0 16px rgba(32, 197, 193, 0.16);
 }
 
 .ai-orb__core {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   color: #fff;
-  background: rgba(255, 255, 255, 0.16);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -2px 6px rgba(16, 64, 110, 0.22);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
@@ -2315,18 +2409,19 @@ onBeforeUnmount(() => {
 }
 
 .ai-panel__eyebrow {
-  color: #168f8c;
-  font-size: 9.5px;
+  color: #0f9c99;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.18em;
 }
 
 .ai-panel__live {
   display: flex;
   align-items: center;
   gap: 5px;
-  color: #8997ac;
-  font-size: 10.5px;
+  color: #6b7a91;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .ai-panel__live i {
@@ -2335,77 +2430,125 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   background: #25b978;
   box-shadow: 0 0 0 3px rgba(37, 185, 120, 0.12);
-  animation: livePulse 2.4s ease-in-out infinite;
+  animation: livePulse 2.8s ease-in-out infinite;
 }
 
 .ai-panel__headline {
   position: relative;
   z-index: 1;
-  margin: 14px 0 7px;
-  color: #149e9b;
-  font-size: 20px;
+  margin: 16px 0 0;
+  color: #0f9c99;
+  font-size: 21px;
   font-weight: 800;
   line-height: 1.35;
   letter-spacing: -0.02em;
+  text-shadow: 0 1px 14px rgba(32, 197, 193, 0.16);
+}
+
+/* 关键数据条：三层信息里的“数据层”，数字用主题色强调 */
+.ai-stats {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0 12px;
+}
+
+.ai-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 10px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: 12px;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.48));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 4px 10px -8px rgba(36, 50, 74, 0.25);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.ai-stat strong {
+  color: var(--stat, #24324a);
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-stat span {
+  color: #74839a;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .ai-panel__para {
   position: relative;
   z-index: 1;
   margin: 0;
-  color: #5b6b82;
-  font-size: 13px;
+  color: #4c5c73;
+  font-size: 13.5px;
   line-height: 1.85;
 }
 
+/* AI 建议：独立玻璃拟态区块 */
 .ai-advice {
   position: relative;
   z-index: 1;
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 12px;
   margin-top: auto;
-  padding: 11px 12px;
-  border: 1px solid rgba(32, 197, 193, 0.14);
-  border-radius: 13px;
-  background: linear-gradient(135deg, rgba(32, 197, 193, 0.09), rgba(57, 120, 246, 0.06));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  padding: 13px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(233, 253, 252, 0.92), rgba(238, 244, 255, 0.86));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 10px 22px -18px rgba(36, 50, 74, 0.35);
+  backdrop-filter: blur(12px) saturate(1.1);
+  -webkit-backdrop-filter: blur(12px) saturate(1.1);
 }
 
+/* 3D 圆形底座 */
 .ai-advice__icon {
   display: grid;
   flex: none;
   place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
-  color: #168f8c;
-  background: rgba(255, 255, 255, 0.72);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: #fff;
+  background: linear-gradient(145deg, #8ff3ee, #20c5c1 62%, #16a5a2);
   box-shadow:
-    0 4px 10px -6px rgba(32, 197, 193, 0.45),
-    inset 0 1px 0 #fff;
+    inset 0 1px 1px rgba(255, 255, 255, 0.7),
+    inset 0 -3px 6px rgba(12, 70, 90, 0.28),
+    0 6px 12px -6px rgba(32, 197, 193, 0.55);
 }
 
 .ai-advice__body {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
 }
 
 .ai-advice__label {
-  color: #168f8c;
-  font-size: 9.5px;
+  color: #0f9c99;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
 .ai-advice__value {
   color: #24324a;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
-  line-height: 1.55;
+  line-height: 1.6;
 }
 
 /* ── AI 报告中心：3D 悬浮入口 ── */
@@ -2413,7 +2556,7 @@ onBeforeUnmount(() => {
   display: grid;
   flex: 1;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
   margin: 0;
 }
 
@@ -2425,18 +2568,18 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 7px;
+  justify-content: flex-start;
+  gap: 8px;
   min-height: 0;
-  padding: 18px 10px 16px;
+  padding: 20px 14px 18px;
   overflow: hidden;
   border: 1px solid rgba(227, 235, 247, 0.9);
-  border-radius: 18px;
+  border-radius: var(--radius-md);
   background:
     radial-gradient(170px 120px at 50% 0%, var(--glow), transparent 70%),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.76));
+    linear-gradient(155deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.7));
   box-shadow:
-    0 16px 30px -24px rgba(36, 50, 74, 0.3),
+    0 14px 28px -24px rgba(36, 50, 74, 0.28),
     inset 0 1px 0 #fff;
   cursor: pointer;
   transform: perspective(900px) translate3d(0, var(--lift), 0) rotateX(var(--rx))
@@ -2453,7 +2596,7 @@ onBeforeUnmount(() => {
   inset: 0;
   background: radial-gradient(
     140px circle at var(--mx, 50%) var(--my, 50%),
-    rgba(255, 255, 255, 0.7),
+    rgba(255, 255, 255, 0.5),
     transparent 60%
   );
   opacity: 0;
@@ -2462,11 +2605,11 @@ onBeforeUnmount(() => {
 }
 
 .tile:hover {
-  --lift: -6px;
-  border-color: rgba(255, 255, 255, 1);
+  --lift: -5px;
+  border-color: rgba(255, 255, 255, 0.95);
   box-shadow:
-    0 26px 46px -26px rgba(36, 50, 74, 0.36),
-    0 14px 26px -18px var(--glow),
+    0 22px 40px -26px rgba(36, 50, 74, 0.3),
+    0 12px 24px -18px var(--glow),
     inset 0 1px 0 #fff;
   will-change: transform;
 }
@@ -2479,27 +2622,28 @@ onBeforeUnmount(() => {
   position: relative;
   display: grid;
   place-items: center;
-  width: 56px;
-  height: 56px;
+  width: 62px;
+  height: 62px;
   border-radius: 50%;
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(232, 240, 252, 0.7));
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(232, 240, 252, 0.66));
   box-shadow:
     inset 0 1px 0 #fff,
-    0 10px 20px -12px var(--glow);
+    inset 0 -2px 6px rgba(120, 168, 255, 0.14),
+    0 10px 20px -14px rgba(36, 50, 74, 0.28);
 }
 
 .tile__badge-orb {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  width: 46px;
+  height: 46px;
   border-radius: 50%;
   color: #fff;
   background: linear-gradient(145deg, var(--accent-soft), var(--accent));
   box-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.7),
     inset 0 -3px 6px rgba(20, 40, 80, 0.16),
-    0 7px 14px -7px var(--glow);
+    0 7px 14px -8px var(--glow);
 }
 
 .tile:hover .tile__badge-orb {
@@ -2510,39 +2654,73 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
 }
 
 .tile__name {
   margin: 0;
   color: #24324a;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 750;
+  letter-spacing: -0.01em;
 }
 
 .tile__sub {
   margin: 0;
-  color: #8997ac;
-  font-size: 11px;
+  color: #74839a;
+  font-size: 11.5px;
+  line-height: 1.5;
   text-align: center;
 }
 
-.tile__arrow {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  color: var(--accent);
-  font-size: 13px;
-  opacity: 0;
-  transform: translate(-3px, 3px);
-  transition:
-    opacity 0.25s ease,
-    transform 0.25s ease;
+/* 分隔线：把入口卡切成“图标+说明 / 操作提示”两段，避免大片留白 */
+.tile__divider {
+  width: 100%;
+  height: 1px;
+  margin-top: auto;
+  background: linear-gradient(
+    90deg,
+    rgba(137, 151, 172, 0),
+    rgba(137, 151, 172, 0.26),
+    rgba(137, 151, 172, 0)
+  );
 }
 
-.tile:hover .tile__arrow {
-  opacity: 0.8;
-  transform: translate(0, 0);
+/* 轻量“进入”提示：胶囊型 CTA，仅作视觉引导，跳转逻辑与原入口一致 */
+.tile__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 6px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.6));
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 6px 14px -10px var(--glow);
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.tile__cta i {
+  font-style: normal;
+  transition: transform 0.25s ease;
+}
+
+.tile:hover .tile__cta {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 8px 16px -10px var(--glow);
+}
+
+.tile:hover .tile__cta i {
+  transform: translateX(3px);
 }
 
 /* ── 键盘可见焦点 ── */
@@ -2572,18 +2750,6 @@ onBeforeUnmount(() => {
   }
   50% {
     transform: translate3d(0, -8px, 0);
-  }
-}
-
-@keyframes sparkle {
-  0%,
-  100% {
-    opacity: 0.8;
-    transform: scale(1) rotate(0deg);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.18) rotate(12deg);
   }
 }
 
@@ -2617,18 +2783,6 @@ onBeforeUnmount(() => {
   }
 }
 
-@keyframes orbRing {
-  0%,
-  100% {
-    opacity: 0.4;
-    transform: scale(0.96);
-  }
-  50% {
-    opacity: 0.9;
-    transform: scale(1.08);
-  }
-}
-
 @keyframes livePulse {
   0%,
   100% {
@@ -2638,17 +2792,6 @@ onBeforeUnmount(() => {
   50% {
     opacity: 1;
     transform: scale(1.12);
-  }
-}
-
-@keyframes aiGlow {
-  from {
-    opacity: 0.6;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(-14px, 10px, 0) scale(1.12);
   }
 }
 
@@ -2762,7 +2905,6 @@ onBeforeUnmount(() => {
 
   .banner {
     padding: 22px 18px;
-    border-radius: 20px;
   }
 
   .banner__left h1 {
@@ -2784,11 +2926,7 @@ onBeforeUnmount(() => {
   }
 
   .kpi__value {
-    font-size: 34px;
-  }
-
-  .card {
-    border-radius: 20px;
+    font-size: 36px;
   }
 
   .trend,
@@ -2819,27 +2957,24 @@ onBeforeUnmount(() => {
     text-align: left;
   }
 
-  .tile__arrow {
-    top: 50%;
-    right: 14px;
-    opacity: 0.45;
-    transform: translateY(-50%);
+  /* 横排时 CTA 靠右，替代桌面端的角标提示 */
+  .tile__cta {
+    margin-top: 0;
+    margin-left: auto;
   }
 
-  .tile:hover .tile__arrow {
-    transform: translateY(-50%);
+  .tile__divider {
+    display: none;
   }
 
   .tile__badge {
-    width: 48px;
-    height: 48px;
-    border-radius: 15px;
+    width: 52px;
+    height: 52px;
   }
 
   .tile__badge-orb {
-    width: 36px;
-    height: 36px;
-    border-radius: 11px;
+    width: 40px;
+    height: 40px;
   }
 
   .ai-panel {
@@ -2885,13 +3020,10 @@ onBeforeUnmount(() => {
 
   .ambient,
   .banner__orb,
-  .banner__spark,
   .kpi__orb,
   .empty-focus__card,
   .empty-focus__orb,
   .ai-orb,
-  .ai-orb__ring,
-  .ai-panel__glow,
   .ai-panel__live i,
   .tile__badge-orb {
     animation: none !important;
