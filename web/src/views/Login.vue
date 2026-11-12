@@ -143,7 +143,7 @@ function revalidateIfError(prop: 'username' | 'password'): void {
   if (field?.validateState === 'error') void formRef.value?.validateField(prop)
 }
 
-/* ═══════ 第八阶段：3D 玻璃卡片鼠标视差（rAF + lerp 平滑，仅桌面端精确指针开启） ═══════ */
+/* ═══════ 第八/九阶段：鼠标视差 + 动态光线（rAF + lerp，仅桌面精确指针开启） ═══════ */
 const glassLayer = ref<HTMLDivElement>()
 
 let rafId = 0
@@ -152,18 +152,54 @@ let targetX = 0
 let targetY = 0
 let curX = 0
 let curY = 0
+/** 指针在场系数：1=页面内 · 0=离开 —— 离开时局部高光随 near 平滑熄灭 */
+let presence = 0
+let targetPresence = 0
+let cardEls: HTMLElement[] = []
+let cardRects: Array<{ cx: number; cy: number; w: number; h: number }> = []
+
+/** 缓存卡片几何中心（仅 mount/resize 时读取布局；视差位移极小，缓存值足够，逐帧零重排） */
+function cacheCardRects(): void {
+  cardRects = cardEls.map((el) => {
+    const r = el.getBoundingClientRect()
+    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, w: r.width || 1, h: r.height || 1 }
+  })
+}
+
+/** 动态光线：高光位置 --lx/--ly 随指针相对卡片中心偏移；靠近程度 --near 0~1 控制光泽强度 */
+function applyLight(i: number, px: number, py: number): void {
+  const el = cardEls[i]
+  const c = cardRects[i]
+  if (!el || !c) return
+  const dx = px - c.cx
+  const dy = py - c.cy
+  const near = Math.max(0, 1 - Math.hypot(dx, dy) / 460) * presence
+  const clamp = (v: number, m: number) => Math.max(-m, Math.min(m, v))
+  el.style.setProperty('--lx', `${clamp((dx / c.w) * 80, 60).toFixed(1)}%`)
+  el.style.setProperty('--ly', `${clamp((dy / c.h) * 80, 55).toFixed(1)}%`)
+  el.style.setProperty('--near', near.toFixed(3))
+}
 
 /** 视差循环：目标值逐帧插值 —— 移动跟手、停止渐回、离页复位共用同一通道 */
 function parallaxTick(): void {
   curX += (targetX - curX) * 0.08
   curY += (targetY - curY) * 0.08
+  presence += (targetPresence - presence) * 0.08
   const el = glassLayer.value
   if (el) {
     el.style.setProperty('--mx', curX.toFixed(4))
     el.style.setProperty('--my', curY.toFixed(4))
   }
+  // 光线位置与视差共用同一平滑通道：插值坐标反算像素位置，高光移动自然无跳变
+  const px = ((curX + 1) / 2) * window.innerWidth
+  const py = ((curY + 1) / 2) * window.innerHeight
+  for (let i = 0; i < cardEls.length; i++) applyLight(i, px, py)
   // 收敛后停止循环，下一次 mousemove 再唤醒（避免常驻空转）
-  if (Math.abs(targetX - curX) < 0.0006 && Math.abs(targetY - curY) < 0.0006) {
+  if (
+    Math.abs(targetX - curX) < 0.0006 &&
+    Math.abs(targetY - curY) < 0.0006 &&
+    Math.abs(targetPresence - presence) < 0.0006
+  ) {
     curX = targetX
     curY = targetY
     rafActive = false
@@ -182,27 +218,40 @@ function startParallax(): void {
 function handleMouseMove(e: MouseEvent): void {
   targetX = (e.clientX / window.innerWidth) * 2 - 1
   targetY = (e.clientY / window.innerHeight) * 2 - 1
+  targetPresence = 1
   startParallax()
 }
 
 function handleMouseLeave(): void {
   targetX = 0
   targetY = 0
+  targetPresence = 0
   startParallax()
 }
 
+function handleResize(): void {
+  cacheCardRects()
+}
+
 onMounted(() => {
-  // 仅精确指针（桌面）且未开启"减少动态效果"时启用鼠标视差；触屏/减弱动效只保留 CSS 浮动
+  // 仅精确指针（桌面）且未开启"减少动态效果"时启用；触屏/减弱动效只保留 CSS 浮动与静态光泽
   const finePointer = window.matchMedia('(pointer: fine)')
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
   if (!finePointer.matches || reducedMotion.matches) return
+  const layer = glassLayer.value
+  if (layer) {
+    cardEls = Array.from(layer.querySelectorAll<HTMLElement>('.glass-card'))
+    cacheCardRects()
+  }
   window.addEventListener('mousemove', handleMouseMove, { passive: true })
   document.documentElement.addEventListener('mouseleave', handleMouseLeave)
+  window.addEventListener('resize', handleResize, { passive: true })
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('mousemove', handleMouseMove)
   document.documentElement.removeEventListener('mouseleave', handleMouseLeave)
+  window.removeEventListener('resize', handleResize)
   cancelAnimationFrame(rafId)
   rafActive = false
 })
@@ -222,8 +271,8 @@ onBeforeUnmount(() => {
         </defs>
       </svg>
 
-      <!-- ① 任务进度：圆环 -->
-      <div class="glass-card gc-progress" style="--dx: 22px; --dy: 14px; --rfy: 6deg; --rfx: -4deg; --fdur: 6.8s; --fdel: 0s">
+      <!-- ① 任务进度：圆环（远景：translateZ 负值 + 轻景深柔化 + 低悬浮） -->
+      <div class="glass-card gc-progress" style="--dx: 22px; --dy: 14px; --rfy: 5.5deg; --rfx: -4.5deg; --tz: -18px; --lift: 0.9; --fa: 4px; --fb: 5px; --fdur: 6.8s; --fdel: 0s">
         <div class="glass-inner">
           <svg class="gc-ring" viewBox="0 0 60 60">
             <circle cx="30" cy="30" r="24" fill="none" stroke="rgba(255, 255, 255, 0.6)" stroke-width="6" />
@@ -234,8 +283,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- ② 任务完成：立体勾选 -->
-      <div class="glass-card gc-done" style="--dx: 30px; --dy: 18px; --rfy: 7deg; --rfx: -5deg; --fdur: 8.2s; --fdel: 0.6s">
+      <!-- ② 任务完成：立体勾选（前景：translateZ 正值 + 大视差幅度 + 高悬浮） -->
+      <div class="glass-card gc-done" style="--dx: 34px; --dy: 20px; --rfy: 8deg; --rfx: -6deg; --tz: 26px; --lift: 1.15; --fa: 5px; --fb: 6.5px; --fdur: 8.2s; --fdel: 0.6s">
         <div class="glass-inner">
           <span class="gc-check">
             <svg viewBox="0 0 24 24"><path d="M5 12.5 10 17.5 19 7.5" fill="none" stroke="url(#wtGlassG)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" /></svg>
@@ -245,8 +294,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- ③ 数据统计：柱状图 -->
-      <div class="glass-card gc-chart" style="--dx: 26px; --dy: 16px; --rfy: 6.5deg; --rfx: -4.5deg; --fdur: 7.4s; --fdel: 1.1s">
+      <!-- ③ 数据统计：柱状图（最远层：最大负 translateZ + 最小视差） -->
+      <div class="glass-card gc-chart" style="--dx: 18px; --dy: 12px; --rfy: 4.5deg; --rfx: -3.5deg; --tz: -26px; --lift: 0.8; --fa: 4.5px; --fb: 5.5px; --fdur: 7.4s; --fdel: 1.1s">
         <div class="glass-inner">
           <div class="gc-bars">
             <i style="--h: 42%"></i><i style="--h: 70%"></i><i style="--h: 55%"></i><i style="--h: 88%"></i>
@@ -255,8 +304,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- ④ 待办清单：状态行 -->
-      <div class="glass-card gc-todo" style="--dx: 18px; --dy: 12px; --rfy: 5deg; --rfx: -3.5deg; --fdur: 9s; --fdel: 1.6s">
+      <!-- ④ 待办清单：状态行（中景） -->
+      <div class="glass-card gc-todo" style="--dx: 14px; --dy: 10px; --rfy: 3.5deg; --rfx: -2.5deg; --tz: -8px; --lift: 1; --fa: 5px; --fb: 6px; --fdur: 9s; --fdel: 1.6s">
         <div class="glass-inner">
           <div class="gc-row"><span class="gc-dot is-done"></span><span class="gc-line" style="--w: 64%"></span></div>
           <div class="gc-row"><span class="gc-dot is-done"></span><span class="gc-line" style="--w: 46%"></span></div>
@@ -401,7 +450,9 @@ onBeforeUnmount(() => {
   box-shadow:
     0 1px 2px rgba(48, 76, 140, 0.05),
     0 12px 32px -14px rgba(48, 76, 140, 0.12),
-    0 32px 68px -32px rgba(48, 76, 140, 0.17);
+    0 32px 68px -32px rgba(48, 76, 140, 0.17),
+    /* 轻微蓝色环境反光：与 3D 玻璃卡片的光影语言统一 */
+    0 4px 16px -8px rgba(90, 140, 240, 0.1);
 }
 
 /* 舒适内距：上 34 / 左右 34 / 下 26（底部仅注册入口一行，收紧更协调） */
@@ -702,49 +753,56 @@ onBeforeUnmount(() => {
   --my: 0;
 }
 
-/* 外层：JS 视差变换（perspective + rotateX/rotateY + 视差位移 + 深度缩放）
-   幅度由每张卡的内联 --dx/--dy/--rfx/--rfy 决定 —— 不同卡片不同移动幅度，形成空间层次 */
+/* 外层：JS 视差变换（perspective + rotateX/rotateY + 视差位移 + translateZ 纵深）
+   幅度由每张卡的内联 --dx/--dy/--rfx/--rfy/--tz 决定 —— 前后景远近分层 */
 .glass-card {
   position: absolute;
   transform:
     perspective(900px)
     rotateX(calc(var(--my) * var(--rfx, -5deg)))
     rotateY(calc(var(--mx) * var(--rfy, 6deg)))
-    translate3d(calc(var(--mx) * var(--dx, 24px)), calc(var(--my) * var(--dy, 14px)), 0)
+    translate3d(calc(var(--mx) * var(--dx, 24px)), calc(var(--my) * var(--dy, 14px)), var(--tz, 0px))
     scale(var(--gs, 1));
   will-change: transform;
 }
 
-/* 内层：CSS 缓慢浮动（与外层视差分离，避免 transform 冲突）· 周期随卡内联变量变化 */
+/* 内层：玻璃本体 —— 三层渐变模拟光线折射（顶部光窗 → 对角光线 → 通透基底），
+   避免沦为"普通白矩形"；缓慢浮动（与外层视差分离，互不冲突） */
 .glass-inner {
   position: relative;
   min-width: 126px;
   padding: 16px 18px 14px;
   border-radius: 18px;
   text-align: center;
-  background: linear-gradient(150deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.22));
-  -webkit-backdrop-filter: blur(10px) saturate(1.25);
-  backdrop-filter: blur(10px) saturate(1.25);
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  background:
+    radial-gradient(130% 70% at 20% -8%, rgba(255, 255, 255, 0.4), transparent 56%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.32), rgba(234, 241, 252, 0.14) 52%, rgba(214, 228, 250, 0.24)),
+    rgba(255, 255, 255, 0.14);
+  -webkit-backdrop-filter: blur(12px) saturate(1.3) brightness(1.03);
+  backdrop-filter: blur(12px) saturate(1.3) brightness(1.03);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   box-shadow:
-    /* 柔和蓝色边缘高光 */
-    inset 0 1px 0 rgba(255, 255, 255, 0.75),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
-    /* 多层蓝色阴影：空间纵深感 */
-    0 12px 28px -10px rgba(48, 76, 140, 0.22),
-    0 28px 56px -24px rgba(48, 76, 140, 0.26);
+    /* 细腻边缘高光：顶部白光 + 底部蓝色环境反射 + 内侧极淡蓝晕 */
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    inset 0 -1px 0 rgba(122, 162, 240, 0.16),
+    inset 0 0 12px rgba(90, 162, 247, 0.07),
+    /* 多层蓝色环境阴影：范围/扩散随内联 --lift（悬浮高度）变化，各卡参数略有差异 */
+    0 14px calc(30px * var(--lift, 1)) -10px rgba(48, 76, 140, 0.2),
+    0 32px calc(62px * var(--lift, 1)) -26px rgba(48, 76, 140, 0.24);
   animation: glassFloat var(--fdur, 7.5s) ease-in-out var(--fdel, 0s) infinite alternate;
 }
 
-/* 玻璃表面光泽：极淡高光呼吸（仅 opacity，合成器友好） */
+/* 玻璃光窗：常驻顶部光泽 + 跟随鼠标的高光（--lx/--ly 为指针相对卡中心偏移，
+   --near 为靠近程度 0~1，均由视差循环写入）· 平滑无闪烁 */
 .glass-inner::before {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: radial-gradient(120% 60% at 24% 0%, rgba(255, 255, 255, 0.5), transparent 58%);
-  opacity: 0.65;
-  animation: glassSheen var(--fdur, 7.5s) ease-in-out var(--fdel, 0s) infinite alternate;
+  background:
+    radial-gradient(54% 44% at calc(50% + var(--lx, 0%)) calc(26% + var(--ly, 0%)), rgba(255, 255, 255, 0.46), transparent 72%),
+    radial-gradient(120% 60% at 24% 0%, rgba(255, 255, 255, 0.3), transparent 58%);
+  opacity: calc(0.55 + var(--near, 0) * 0.4);
   pointer-events: none;
 }
 
@@ -762,13 +820,8 @@ onBeforeUnmount(() => {
 }
 
 @keyframes glassFloat {
-  from { transform: translateY(-5px); }
-  to { transform: translateY(6px); }
-}
-
-@keyframes glassSheen {
-  from { opacity: 0.5; }
-  to { opacity: 1; }
+  from { transform: translateY(calc(var(--fa, 5px) * -1)); }
+  to { transform: translateY(var(--fb, 6px)); }
 }
 
 @keyframes glassShadow {
