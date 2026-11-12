@@ -242,14 +242,17 @@ function revalidateIfError(prop: 'username' | 'password'): void {
 </template>
 
 <style scoped>
-/* ═══════ 第一阶段：整体布局 + 背景视觉（3D 蓝白科技风本地背景图 + 轻微白色遮罩） ═══════ */
+/* ═══════ 第一阶段：整体布局 + 3D 背景视觉（蓝白科技风本地背景图 + 轻微白色遮罩） ═══════ */
 .login-page {
   position: relative;
+  /* border-box：min-height 100dvh 含 padding，避免移动端出现 48px 多余垂直滚动 */
+  box-sizing: border-box;
+  /* 100dvh 兜底：移动端浏览器动态工具栏收展时不会产生多余垂直滚动 */
   min-height: 100vh;
-  /* flex + margin auto 居中：内容高于视口时也不会被裁切（无异常垂直溢出） */
+  min-height: 100dvh;
+  /* flex + margin auto 居中：内容高于视口时自然增长（允许垂直滚动，无横向滚动条） */
   display: flex;
   padding: clamp(24px, 6vh, 56px) 24px;
-  /* 光晕装饰禁止产生横向滚动条 */
   overflow-x: hidden;
   /* 3D 背景图：本地静态资源 · cover 适配窗口 · 居中 · 不拉伸变形；
      第一层为极轻白色遮罩（提升卡片文字对比度，不破坏 3D 质感），直接作为
@@ -260,13 +263,9 @@ function revalidateIfError(prop: 'username' | 'password'): void {
   background-color: #eaf1fb;
 }
 
-/* 登录区域：水平垂直居中 + 舒适留白（卡片本体样式不变） */
+/* ═══════ 第二阶段：登录卡片容器视觉（居中规则并入本块，消除重复定义） ═══════ */
 .login-card {
   margin: auto;
-}
-
-/* ═══════ 第二阶段：登录卡片容器视觉升级（背景与布局保持不变） ═══════ */
-.login-card {
   width: min(100%, 400px);
   /* 内距交由 el-card__body 统一控制，保证左右对齐与呼吸空间 */
   padding: 0;
@@ -274,11 +273,12 @@ function revalidateIfError(prop: 'username' | 'password'): void {
   /* 近纯白面板 + 细腻浅蓝灰边框（与背景同色系，层次清晰） */
   background: #fff;
   border: 1px solid #e9eef6;
-  /* 多层低透明度灰蓝阴影：贴地层 → 中层 → 远层，自然浮现、无重黑投影 */
+  /* 三层低透明度蓝调阴影（与 3D 蓝白背景同色系）：贴地层 → 中层 → 远层，
+     自然融入背景、无重黑投影 */
   box-shadow:
-    0 1px 2px rgba(37, 60, 112, 0.04),
-    0 10px 28px -12px rgba(37, 60, 112, 0.1),
-    0 28px 60px -28px rgba(37, 60, 112, 0.16);
+    0 1px 2px rgba(48, 76, 140, 0.05),
+    0 12px 32px -14px rgba(48, 76, 140, 0.12),
+    0 32px 68px -32px rgba(48, 76, 140, 0.17);
 }
 
 /* 舒适内距：上 34 / 左右 34 / 下 26（底部仅注册入口一行，收紧更协调） */
@@ -286,7 +286,6 @@ function revalidateIfError(prop: 'username' | 'password'): void {
   padding: 34px 34px 26px;
 }
 
-/* 品牌区 → 表单 → 底部辅助信息的节奏微调（仅间距，不改内容） */
 /* ═══════ 第三阶段：品牌 Logo 与标题区域 ═══════ */
 .login-head {
   margin-bottom: 24px;
