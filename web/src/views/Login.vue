@@ -425,11 +425,11 @@ onBeforeUnmount(() => {
       <p class="login-switch">
         <template v-if="mode === 'register'">
           已有账号？
-          <el-link type="primary" :underline="false" @click="mode = 'login'">去登录</el-link>
+          <el-link type="primary" underline="never" @click="mode = 'login'">去登录</el-link>
         </template>
         <template v-else>
           没有账号？
-          <el-link type="primary" :underline="false" @click="mode = 'register'">去注册</el-link>
+          <el-link type="primary" underline="never" @click="mode = 'register'">去注册</el-link>
         </template>
       </p>
 

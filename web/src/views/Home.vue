@@ -836,7 +836,7 @@ onBeforeUnmount(() => {
       >
         <div class="kpi__icon-wrap">
           <span class="kpi__orb">
-            <el-icon :size="21"><component :is="k.icon" /></el-icon>
+            <el-icon :size="22"><component :is="k.icon" /></el-icon>
           </span>
         </div>
         <div class="kpi__text">
@@ -968,6 +968,7 @@ onBeforeUnmount(() => {
             </h3>
             <div class="ai-panel">
               <span class="ai-panel__glow" aria-hidden="true" />
+              <!-- 第一部分：模块标识（图标 + 分析状态）；标题与「智能分析」标签在上方栏头 -->
               <div class="ai-panel__head">
                 <span class="ai-orb" aria-hidden="true">
                   <span class="ai-orb__ring" />
@@ -981,21 +982,32 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
               </div>
-              <h4 class="ai-panel__headline">{{ activeInsight.headline }}</h4>
-              <!-- 关键数据条：分层展示，数字用主题色强调（数据全部来自已加载任务） -->
-              <div class="ai-stats" role="list">
-                <div
-                  v-for="s in insightStats"
-                  :key="s.label"
-                  role="listitem"
-                  class="ai-stat"
-                  :style="{ '--stat': s.color }"
-                >
-                  <strong>{{ s.value }}</strong>
-                  <span>{{ s.label }}</span>
+
+              <!-- 第二部分：关键数据指标（全部由已加载任务派生，数字用主题色强调） -->
+              <div class="ai-section">
+                <p class="ai-section__label">关键数据<i aria-hidden="true" /></p>
+                <div class="ai-stats" role="list">
+                  <div
+                    v-for="s in insightStats"
+                    :key="s.label"
+                    role="listitem"
+                    class="ai-stat"
+                    :style="{ '--stat': s.color }"
+                  >
+                    <strong>{{ s.value }}</strong>
+                    <span>{{ s.label }}</span>
+                  </div>
                 </div>
               </div>
-              <p class="ai-panel__para">{{ activeInsight.para }}</p>
+
+              <!-- 第三部分：AI 分析正文 -->
+              <div class="ai-section ai-section--body">
+                <p class="ai-section__label">AI 分析<i aria-hidden="true" /></p>
+                <h4 class="ai-panel__headline">{{ activeInsight.headline }}</h4>
+                <p class="ai-panel__para">{{ activeInsight.para }}</p>
+              </div>
+
+              <!-- 第四部分：AI 建议 -->
               <div class="ai-advice">
                 <span class="ai-advice__icon"><el-icon :size="15"><Sunny /></el-icon></span>
                 <div class="ai-advice__body">
@@ -1066,6 +1078,8 @@ onBeforeUnmount(() => {
   --violet: #7c6cf0;
   --radius: 20px; /* 外层卡片统一圆角 */
   --radius-md: 16px; /* 卡片内嵌面板 / 入口卡统一圆角 */
+  --btn-h: 42px; /* 主按钮统一高度 */
+  --gap: 18px; /* 模块栅格统一间距 */
   /* 阴影规范：整体强度较上一版下调约 20%，并削弱卡片底部蓝色光晕 */
   --shadow-card:
     0 1px 0 rgba(255, 255, 255, 0.9) inset,
@@ -1085,7 +1099,7 @@ onBeforeUnmount(() => {
   isolation: isolate;
   display: grid;
   grid-template-rows: auto auto auto auto; /* 行高由内容决定，图表行不再被底部行撑高 */
-  gap: 18px;
+  gap: var(--gap);
   width: 100%;
   flex: 1 0 auto;
   margin: 0;
@@ -1227,9 +1241,9 @@ onBeforeUnmount(() => {
   gap: 9px;
   margin: 0;
   color: var(--text);
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 750;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
 }
 
 .title-bar {
@@ -1390,11 +1404,11 @@ onBeforeUnmount(() => {
   gap: 7px;
   margin: 0 0 8px;
   color: #3978f6;
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  opacity: 0.82;
+  opacity: 0.85;
 }
 
 .banner__eyebrow-dot {
@@ -1487,7 +1501,7 @@ onBeforeUnmount(() => {
 .banner__date .date-sub {
   margin: 2px 0 0;
   color: #6b7a91;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.3;
 }
 
@@ -1497,7 +1511,7 @@ onBeforeUnmount(() => {
 }
 
 .btn-grad.el-button {
-  height: 42px;
+  height: var(--btn-h);
   padding: 0 20px;
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 13px;
@@ -1535,7 +1549,7 @@ onBeforeUnmount(() => {
 }
 
 .btn-ai.el-button {
-  height: 42px;
+  height: var(--btn-h);
   padding: 0 20px;
   border: 1px solid rgba(255, 255, 255, 0.9);
   border-radius: 13px;
@@ -1572,7 +1586,7 @@ onBeforeUnmount(() => {
 .kpi-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 18px;
+  gap: var(--gap);
 }
 
 .kpi {
@@ -1637,8 +1651,8 @@ onBeforeUnmount(() => {
   flex: none;
   display: grid;
   place-items: center;
-  width: 56px;
-  height: 56px;
+  width: 58px;
+  height: 58px;
   border-radius: 50%;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(232, 240, 252, 0.62));
   box-shadow:
@@ -1659,8 +1673,8 @@ onBeforeUnmount(() => {
 .kpi__orb {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   color: #fff;
   background: linear-gradient(145deg, var(--accent-soft) 0%, var(--accent) 62%, var(--accent) 100%);
@@ -1701,7 +1715,7 @@ onBeforeUnmount(() => {
 .kpi__hint {
   margin: 0;
   color: #74839a;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -1749,7 +1763,7 @@ onBeforeUnmount(() => {
 .charts-row {
   display: grid;
   grid-template-columns: 1.65fr 1fr;
-  gap: 18px;
+  gap: var(--gap);
   min-height: 340px;
 }
 
@@ -1790,7 +1804,7 @@ onBeforeUnmount(() => {
   background: transparent;
   color: #7a889c;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition:
@@ -1969,7 +1983,7 @@ onBeforeUnmount(() => {
 .bottom-row {
   display: grid;
   grid-template-columns: 1.65fr 1fr;
-  gap: 18px;
+  gap: var(--gap);
   min-height: 320px;
 }
 
@@ -2031,7 +2045,7 @@ onBeforeUnmount(() => {
   color: #fff;
   background: linear-gradient(145deg, #8ff3ee, #20c5c1);
   box-shadow:
-    0 4px 10px -4px rgba(32, 197, 193, 0.55),
+    0 4px 10px -6px rgba(32, 197, 193, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
@@ -2040,7 +2054,7 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(32, 197, 193, 0.2);
   border-radius: 999px;
   color: #168f8c;
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
   background: rgba(255, 255, 255, 0.62);
@@ -2144,7 +2158,7 @@ onBeforeUnmount(() => {
   padding: 3px 10px;
   border: 1px solid transparent;
   border-radius: 999px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.5;
 }
@@ -2356,9 +2370,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 13px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(137, 151, 172, 0.16);
 }
 
-/* 3D 发光晶体：多面渐变球体 + 高光 + 内圈，作为模块的视觉锚点 */
+/* 3D 发光晶体：多面渐变球体 + 高光 + 内圈；收敛外发光，避免过亮 */
 .ai-orb {
   position: relative;
   display: grid;
@@ -2373,8 +2389,8 @@ onBeforeUnmount(() => {
   box-shadow:
     inset 0 2px 4px rgba(255, 255, 255, 0.7),
     inset 0 -8px 14px rgba(16, 64, 110, 0.28),
-    0 14px 26px -14px rgba(32, 197, 193, 0.5),
-    0 0 0 6px rgba(32, 197, 193, 0.07);
+    0 10px 20px -14px rgba(32, 197, 193, 0.4),
+    0 0 0 5px rgba(32, 197, 193, 0.05);
   animation: aiFloat 6s ease-in-out infinite;
 }
 
@@ -2410,9 +2426,9 @@ onBeforeUnmount(() => {
 
 .ai-panel__eyebrow {
   color: #0f9c99;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 800;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.14em;
 }
 
 .ai-panel__live {
@@ -2420,7 +2436,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 5px;
   color: #6b7a91;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -2433,46 +2449,91 @@ onBeforeUnmount(() => {
   animation: livePulse 2.8s ease-in-out infinite;
 }
 
+/* ── 分段标题：把面板切成「关键数据 / AI 分析 / AI 建议」三层结构 ── */
+.ai-section {
+  position: relative;
+  z-index: 1;
+}
+
+.ai-panel__head + .ai-section {
+  margin-top: 16px;
+}
+
+.ai-section--body {
+  margin-top: 16px;
+  margin-bottom: 16px;
+}
+
+.ai-section__label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 9px;
+  color: #74839a;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.ai-section__label i {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(137, 151, 172, 0.3), rgba(137, 151, 172, 0));
+}
+
 .ai-panel__headline {
   position: relative;
   z-index: 1;
-  margin: 16px 0 0;
+  margin: 0 0 8px;
   color: #0f9c99;
   font-size: 21px;
   font-weight: 800;
-  line-height: 1.35;
+  line-height: 1.4;
   letter-spacing: -0.02em;
-  text-shadow: 0 1px 14px rgba(32, 197, 193, 0.16);
+  text-shadow: 0 1px 14px rgba(32, 197, 193, 0.14);
 }
 
-/* 关键数据条：三层信息里的“数据层”，数字用主题色强调 */
+/* 关键数据：三枚等宽玻璃 chip，顶部细色条 + 主题色数字做重点强调 */
 .ai-stats {
   position: relative;
   z-index: 1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin: 14px 0 12px;
+  gap: 9px;
 }
 
 .ai-stat {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 9px 10px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.85);
-  border-radius: 12px;
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.48));
+  gap: 4px;
+  padding: 12px 12px 11px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  border-radius: 13px;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.5));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 4px 10px -8px rgba(36, 50, 74, 0.25);
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 5px 12px -9px rgba(36, 50, 74, 0.28);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
 
+.ai-stat::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  border-radius: 0 0 3px 3px;
+  background: var(--stat, #3978f6);
+  opacity: 0.7;
+}
+
 .ai-stat strong {
   color: var(--stat, #24324a);
-  font-size: 19px;
+  font-size: 20px;
   font-weight: 800;
   line-height: 1.15;
   letter-spacing: -0.03em;
@@ -2480,8 +2541,8 @@ onBeforeUnmount(() => {
 }
 
 .ai-stat span {
-  color: #74839a;
-  font-size: 11px;
+  color: #6b7a91;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -2489,12 +2550,12 @@ onBeforeUnmount(() => {
   position: relative;
   z-index: 1;
   margin: 0;
-  color: #4c5c73;
-  font-size: 13.5px;
+  color: #47566d;
+  font-size: 14px;
   line-height: 1.85;
 }
 
-/* AI 建议：独立玻璃拟态区块 */
+/* AI 建议：与面板同源的渐变描边玻璃区块（第四部分） */
 .ai-advice {
   position: relative;
   z-index: 1;
@@ -2502,18 +2563,21 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   gap: 12px;
   margin-top: auto;
-  padding: 13px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.9);
+  padding: 14px 15px;
+  border: 1px solid transparent;
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(233, 253, 252, 0.92), rgba(238, 244, 255, 0.86));
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.56)) padding-box,
+    linear-gradient(135deg, rgba(32, 197, 193, 0.5), rgba(255, 255, 255, 0.85) 45%, rgba(57, 120, 246, 0.32))
+      border-box;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    0 10px 22px -18px rgba(36, 50, 74, 0.35);
-  backdrop-filter: blur(12px) saturate(1.1);
-  -webkit-backdrop-filter: blur(12px) saturate(1.1);
+    0 12px 26px -20px rgba(36, 50, 74, 0.4);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
 }
 
-/* 3D 圆形底座 */
+/* 3D 圆形底座（收敛外发光） */
 .ai-advice__icon {
   display: grid;
   flex: none;
@@ -2526,29 +2590,29 @@ onBeforeUnmount(() => {
   box-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.7),
     inset 0 -3px 6px rgba(12, 70, 90, 0.28),
-    0 6px 12px -6px rgba(32, 197, 193, 0.55);
+    0 5px 10px -7px rgba(32, 197, 193, 0.45);
 }
 
 .ai-advice__body {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
 }
 
 .ai-advice__label {
   color: #0f9c99;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 800;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .ai-advice__value {
   color: #24324a;
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 /* ── AI 报告中心：3D 悬浮入口 ── */
@@ -2568,7 +2632,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 8px;
   min-height: 0;
   padding: 20px 14px 18px;
@@ -2618,12 +2682,31 @@ onBeforeUnmount(() => {
   opacity: 1;
 }
 
+/* 边缘高光：hover 时勾出一圈白色内高光，强化“悬浮卡片”质感 */
+.tile::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.45),
+    inset 0 -14px 24px -22px rgba(57, 120, 246, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.tile:hover::after {
+  opacity: 1;
+}
+
 .tile__badge {
   position: relative;
   display: grid;
   place-items: center;
-  width: 62px;
-  height: 62px;
+  width: 58px;
+  height: 58px;
   border-radius: 50%;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(232, 240, 252, 0.66));
   box-shadow:
@@ -2635,8 +2718,8 @@ onBeforeUnmount(() => {
 .tile__badge-orb {
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   color: #fff;
   background: linear-gradient(145deg, var(--accent-soft), var(--accent));
@@ -2654,7 +2737,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 5px;
 }
 
 .tile__name {
@@ -2667,9 +2750,9 @@ onBeforeUnmount(() => {
 
 .tile__sub {
   margin: 0;
-  color: #74839a;
-  font-size: 11.5px;
-  line-height: 1.5;
+  color: #6b7a91;
+  font-size: 12px;
+  line-height: 1.55;
   text-align: center;
 }
 
@@ -2677,7 +2760,7 @@ onBeforeUnmount(() => {
 .tile__divider {
   width: 100%;
   height: 1px;
-  margin-top: auto;
+  margin-top: 12px;
   background: linear-gradient(
     90deg,
     rgba(137, 151, 172, 0),
@@ -2714,9 +2797,12 @@ onBeforeUnmount(() => {
 
 .tile:hover .tile__cta {
   transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 1);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.82));
   box-shadow:
     inset 0 1px 0 #fff,
-    0 8px 16px -10px var(--glow);
+    0 8px 18px -10px var(--glow),
+    0 0 0 3px var(--glow);
 }
 
 .tile:hover .tile__cta i {
