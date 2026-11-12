@@ -237,8 +237,7 @@ function revalidateIfError(prop: 'username' | 'password'): void {
         </template>
       </p>
 
-      <p class="login-hint">演示账号：admin / admin123</p>
-    </el-card>
+      </el-card>
   </div>
 </template>
 
@@ -439,13 +438,6 @@ function revalidateIfError(prop: 'username' | 'password'): void {
   margin: 18px 0 0;
   color: var(--el-text-color-secondary);
   font-size: 13px;
-  text-align: center;
-}
-
-.login-hint {
-  margin: 14px 0 0;
-  color: var(--el-text-color-placeholder);
-  font-size: 12px;
   text-align: center;
 }
 
