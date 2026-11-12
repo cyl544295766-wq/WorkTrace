@@ -233,11 +233,35 @@ function handleResize(): void {
   cacheCardRects()
 }
 
+/** 装饰性演示数字递增（0 → data-count）：rAF 驱动、ease-out cubic、后台标签自动暂停；
+    仅为视觉演示元素，非真实业务数据；reduced-motion 时直接输出终值 */
+function runCounters(reducedMotion: boolean): void {
+  const nums = document.querySelectorAll<HTMLElement>('[data-count]')
+  if (reducedMotion) {
+    nums.forEach((el) => { el.textContent = el.dataset.count ?? '0' })
+    return
+  }
+  const DURATION = 1400
+  const DELAY = 900
+  nums.forEach((el) => {
+    const target = Number(el.dataset.count || 0)
+    const start = performance.now() + DELAY
+    const step = (now: number): void => {
+      const p = Math.min(1, Math.max(0, (now - start) / DURATION))
+      const eased = 1 - Math.pow(1 - p, 3)
+      el.textContent = String(Math.round(target * eased))
+      if (p < 1) requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  })
+}
+
 onMounted(() => {
-  // 仅精确指针（桌面）且未开启"减少动态效果"时启用；触屏/减弱动效只保留 CSS 浮动与静态光泽
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  runCounters(reducedMotion)
+  // 仅精确指针（桌面）且未开启"减少动态效果"时启用视差；触屏/减弱动效只保留 CSS 浮动与静态光泽
   const finePointer = window.matchMedia('(pointer: fine)')
-  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
-  if (!finePointer.matches || reducedMotion.matches) return
+  if (!finePointer.matches || reducedMotion) return
   const layer = glassLayer.value
   if (layer) {
     cardEls = Array.from(layer.querySelectorAll<HTMLElement>('.glass-card'))
@@ -276,10 +300,13 @@ onBeforeUnmount(() => {
         <div class="glass-inner">
           <svg class="gc-ring" viewBox="0 0 60 60">
             <circle cx="30" cy="30" r="24" fill="none" stroke="rgba(255, 255, 255, 0.6)" stroke-width="6" />
-            <circle cx="30" cy="30" r="24" fill="none" stroke="url(#wtGlassG)" stroke-width="6" stroke-linecap="round" stroke-dasharray="108 43" transform="rotate(-90 30 30)" />
+            <!-- 进度弧：dashoffset 151(0%) → 42.3(72%)，CSS 动画平滑增长 -->
+            <circle class="ring-fill" cx="30" cy="30" r="24" fill="none" stroke="url(#wtGlassG)" stroke-width="6" stroke-linecap="round" stroke-dasharray="151" transform="rotate(-90 30 30)" />
+            <!-- 达标高光：一次柔和蓝色脉冲（仅 opacity） -->
+            <circle class="ring-glow" cx="30" cy="30" r="24" fill="none" stroke="url(#wtGlassG)" stroke-width="7" stroke-linecap="round" stroke-dasharray="151" stroke-dashoffset="42.3" transform="rotate(-90 30 30)" />
           </svg>
           <p class="gc-label">本周进度</p>
-          <p class="gc-value">72%</p>
+          <p class="gc-value"><b class="gc-num" data-count="72">0</b>%</p>
         </div>
       </div>
 
@@ -290,7 +317,7 @@ onBeforeUnmount(() => {
             <svg viewBox="0 0 24 24"><path d="M5 12.5 10 17.5 19 7.5" fill="none" stroke="url(#wtGlassG)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" /></svg>
           </span>
           <p class="gc-label">今日已完成</p>
-          <p class="gc-value">12 项</p>
+          <p class="gc-value"><b class="gc-num" data-count="12">0</b> 项</p>
         </div>
       </div>
 
@@ -298,7 +325,7 @@ onBeforeUnmount(() => {
       <div class="glass-card gc-chart" style="--dx: 18px; --dy: 12px; --rfy: 4.5deg; --rfx: -3.5deg; --tz: -26px; --lift: 0.8; --fa: 4.5px; --fb: 5.5px; --fdur: 7.4s; --fdel: 1.1s">
         <div class="glass-inner">
           <div class="gc-bars">
-            <i style="--h: 42%"></i><i style="--h: 70%"></i><i style="--h: 55%"></i><i style="--h: 88%"></i>
+            <i style="--h: 42%; --i: 0"></i><i style="--h: 70%; --i: 1"></i><i style="--h: 55%; --i: 2"></i><i style="--h: 88%; --i: 3"></i>
           </div>
           <p class="gc-label">任务统计</p>
         </div>
@@ -307,9 +334,9 @@ onBeforeUnmount(() => {
       <!-- ④ 待办清单：状态行（中景） -->
       <div class="glass-card gc-todo" style="--dx: 14px; --dy: 10px; --rfy: 3.5deg; --rfx: -2.5deg; --tz: -8px; --lift: 1; --fa: 5px; --fb: 6px; --fdur: 9s; --fdel: 1.6s">
         <div class="glass-inner">
-          <div class="gc-row"><span class="gc-dot is-done"></span><span class="gc-line" style="--w: 64%"></span></div>
-          <div class="gc-row"><span class="gc-dot is-done"></span><span class="gc-line" style="--w: 46%"></span></div>
-          <div class="gc-row"><span class="gc-dot"></span><span class="gc-line" style="--w: 72%"></span></div>
+          <div class="gc-row" style="--i: 0"><span class="gc-dot is-done"></span><span class="gc-line" style="--w: 64%"></span></div>
+          <div class="gc-row" style="--i: 1"><span class="gc-dot is-done"></span><span class="gc-line" style="--w: 46%"></span></div>
+          <div class="gc-row" style="--i: 2"><span class="gc-dot"></span><span class="gc-line" style="--w: 72%"></span></div>
           <p class="gc-label">待办清单</p>
         </div>
       </div>
@@ -762,7 +789,7 @@ onBeforeUnmount(() => {
     rotateX(calc(var(--my) * var(--rfx, -5deg)))
     rotateY(calc(var(--mx) * var(--rfy, 6deg)))
     translate3d(calc(var(--mx) * var(--dx, 24px)), calc(var(--my) * var(--dy, 14px)), var(--tz, 0px))
-    scale(var(--gs, 1));
+    scale(calc(var(--gs, 1) * (1 + var(--near, 0) * 0.045)));
   will-change: transform;
 }
 
@@ -962,6 +989,137 @@ onBeforeUnmount(() => {
   .glass-card {
     transform: none;
     will-change: auto;
+  }
+}
+
+/* ═══════ 第十阶段：卡片微交互与数据展示动画（全部 one-shot，仅 transform/opacity） ═══════ */
+/* 统一缓动曲线 */
+.glass-layer {
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ① 进度环：dashoffset 151(0%) → 42.3(72%) 平滑增长，与数字递增同步（0.9s 起 / 1.4s 时长） */
+.ring-fill {
+  stroke-dasharray: 151;
+  stroke-dashoffset: 151;
+  animation: ringGrow 1.4s var(--ease-out) 0.9s forwards;
+}
+
+@keyframes ringGrow {
+  to { stroke-dashoffset: 42.3; }
+}
+
+/* 达标高光：整环一次柔和蓝色脉冲（仅 opacity，不闪烁不旋转） */
+.ring-glow {
+  opacity: 0;
+  animation: ringGlow 0.9s ease 2.25s 1;
+}
+
+@keyframes ringGlow {
+  0% { opacity: 0; }
+  40% { opacity: 0.45; }
+  100% { opacity: 0; }
+}
+
+/* ② 完成勾选：轻微弹性进入（温和 back-out，无夸张弹跳）+ 一次蓝色光效扩散 */
+.gc-check {
+  position: relative;
+  animation: checkPop 0.55s cubic-bezier(0.34, 1.4, 0.64, 1) 1s both;
+}
+
+@keyframes checkPop {
+  from { transform: scale(0.55); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.gc-check::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 16px;
+  pointer-events: none;
+  animation: checkGlow 0.95s ease 1.4s 1 both;
+}
+
+@keyframes checkGlow {
+  0% { box-shadow: 0 0 0 0 rgba(90, 150, 240, 0.32); opacity: 1; }
+  100% { box-shadow: 0 0 0 14px rgba(90, 150, 240, 0); opacity: 0; }
+}
+
+/* ③ 柱状图：自底部依次升起（scaleY 0→1，0.15s 错落延迟） */
+.gc-bars i {
+  transform: scaleY(0);
+  transform-origin: bottom;
+  animation: barGrow 0.75s var(--ease-out) forwards;
+  animation-delay: calc(1.05s + var(--i, 0) * 0.15s);
+}
+
+@keyframes barGrow {
+  to { transform: scaleY(1); }
+}
+
+/* ④ 待办清单：行依次淡入上移；状态圆点轻微呼吸 */
+.gc-row {
+  animation: rowIn 0.5s var(--ease-out) both;
+  animation-delay: calc(1s + var(--i, 0) * 0.16s);
+}
+
+@keyframes rowIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.gc-dot {
+  animation: dotBreath 3.2s ease-in-out var(--bdel, 0s) infinite alternate;
+}
+
+.gc-row:nth-child(2) .gc-dot {
+  animation-delay: 0.7s;
+}
+
+.gc-row:nth-child(3) .gc-dot {
+  animation-delay: 1.4s;
+}
+
+@keyframes dotBreath {
+  from { transform: scale(0.9); opacity: 0.85; }
+  to { transform: scale(1.12); opacity: 1; }
+}
+
+/* 计数数字：宽度稳定占位，递增时不抖动卡片布局 */
+.gc-num {
+  font: inherit;
+  display: inline-block;
+  min-width: 1.4em;
+}
+
+/* 减少动态效果：所有数据/微交互动画直接呈现终值终态 */
+@media (prefers-reduced-motion: reduce) {
+  .ring-fill {
+    animation: none;
+    stroke-dashoffset: 42.3;
+  }
+  .ring-glow,
+  .gc-check::after {
+    animation: none;
+    opacity: 0;
+  }
+  .gc-check {
+    animation: none;
+    transform: none;
+    opacity: 1;
+  }
+  .gc-bars i {
+    animation: none;
+    transform: none;
+  }
+  .gc-row {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .gc-dot {
+    animation: none;
   }
 }
 </style>
