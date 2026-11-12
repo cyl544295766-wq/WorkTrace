@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormItemRule, type FormRules } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
@@ -142,10 +142,130 @@ function revalidateIfError(prop: 'username' | 'password'): void {
   const field = formRef.value?.fields.find((f) => f.prop === prop)
   if (field?.validateState === 'error') void formRef.value?.validateField(prop)
 }
+
+/* ═══════ 第八阶段：3D 玻璃卡片鼠标视差（rAF + lerp 平滑，仅桌面端精确指针开启） ═══════ */
+const glassLayer = ref<HTMLDivElement>()
+
+let rafId = 0
+let rafActive = false
+let targetX = 0
+let targetY = 0
+let curX = 0
+let curY = 0
+
+/** 视差循环：目标值逐帧插值 —— 移动跟手、停止渐回、离页复位共用同一通道 */
+function parallaxTick(): void {
+  curX += (targetX - curX) * 0.08
+  curY += (targetY - curY) * 0.08
+  const el = glassLayer.value
+  if (el) {
+    el.style.setProperty('--mx', curX.toFixed(4))
+    el.style.setProperty('--my', curY.toFixed(4))
+  }
+  // 收敛后停止循环，下一次 mousemove 再唤醒（避免常驻空转）
+  if (Math.abs(targetX - curX) < 0.0006 && Math.abs(targetY - curY) < 0.0006) {
+    curX = targetX
+    curY = targetY
+    rafActive = false
+    return
+  }
+  rafId = requestAnimationFrame(parallaxTick)
+}
+
+function startParallax(): void {
+  if (!rafActive) {
+    rafActive = true
+    rafId = requestAnimationFrame(parallaxTick)
+  }
+}
+
+function handleMouseMove(e: MouseEvent): void {
+  targetX = (e.clientX / window.innerWidth) * 2 - 1
+  targetY = (e.clientY / window.innerHeight) * 2 - 1
+  startParallax()
+}
+
+function handleMouseLeave(): void {
+  targetX = 0
+  targetY = 0
+  startParallax()
+}
+
+onMounted(() => {
+  // 仅精确指针（桌面）且未开启"减少动态效果"时启用鼠标视差；触屏/减弱动效只保留 CSS 浮动
+  const finePointer = window.matchMedia('(pointer: fine)')
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+  if (!finePointer.matches || reducedMotion.matches) return
+  window.addEventListener('mousemove', handleMouseMove, { passive: true })
+  document.documentElement.addEventListener('mouseleave', handleMouseLeave)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('mousemove', handleMouseMove)
+  document.documentElement.removeEventListener('mouseleave', handleMouseLeave)
+  cancelAnimationFrame(rafId)
+  rafActive = false
+})
 </script>
 
 <template>
   <div class="login-page">
+    <!-- 3D 玻璃悬浮装饰卡片：纯装饰 · pointer-events:none · 位于登录卡后方（z-index 0 < 卡片 1） -->
+    <div ref="glassLayer" class="glass-layer" aria-hidden="true">
+      <!-- 共享渐变定义（各卡片 SVG 引用） -->
+      <svg width="0" height="0" style="position: absolute">
+        <defs>
+          <linearGradient id="wtGlassG" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#5aa2f7" />
+            <stop offset="1" stop-color="#2f6bf0" />
+          </linearGradient>
+        </defs>
+      </svg>
+
+      <!-- ① 任务进度：圆环 -->
+      <div class="glass-card gc-progress" style="--dx: 22px; --dy: 14px; --rfy: 6deg; --rfx: -4deg; --fdur: 6.8s; --fdel: 0s">
+        <div class="glass-inner">
+          <svg class="gc-ring" viewBox="0 0 60 60">
+            <circle cx="30" cy="30" r="24" fill="none" stroke="rgba(255, 255, 255, 0.6)" stroke-width="6" />
+            <circle cx="30" cy="30" r="24" fill="none" stroke="url(#wtGlassG)" stroke-width="6" stroke-linecap="round" stroke-dasharray="108 43" transform="rotate(-90 30 30)" />
+          </svg>
+          <p class="gc-label">本周进度</p>
+          <p class="gc-value">72%</p>
+        </div>
+      </div>
+
+      <!-- ② 任务完成：立体勾选 -->
+      <div class="glass-card gc-done" style="--dx: 30px; --dy: 18px; --rfy: 7deg; --rfx: -5deg; --fdur: 8.2s; --fdel: 0.6s">
+        <div class="glass-inner">
+          <span class="gc-check">
+            <svg viewBox="0 0 24 24"><path d="M5 12.5 10 17.5 19 7.5" fill="none" stroke="url(#wtGlassG)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          </span>
+          <p class="gc-label">今日已完成</p>
+          <p class="gc-value">12 项</p>
+        </div>
+      </div>
+
+      <!-- ③ 数据统计：柱状图 -->
+      <div class="glass-card gc-chart" style="--dx: 26px; --dy: 16px; --rfy: 6.5deg; --rfx: -4.5deg; --fdur: 7.4s; --fdel: 1.1s">
+        <div class="glass-inner">
+          <div class="gc-bars">
+            <i style="--h: 42%"></i><i style="--h: 70%"></i><i style="--h: 55%"></i><i style="--h: 88%"></i>
+          </div>
+          <p class="gc-label">任务统计</p>
+        </div>
+      </div>
+
+      <!-- ④ 待办清单：状态行 -->
+      <div class="glass-card gc-todo" style="--dx: 18px; --dy: 12px; --rfy: 5deg; --rfx: -3.5deg; --fdur: 9s; --fdel: 1.6s">
+        <div class="glass-inner">
+          <div class="gc-row"><span class="gc-dot is-done"></span><span class="gc-line" style="--w: 64%"></span></div>
+          <div class="gc-row"><span class="gc-dot is-done"></span><span class="gc-line" style="--w: 46%"></span></div>
+          <div class="gc-row"><span class="gc-dot"></span><span class="gc-line" style="--w: 72%"></span></div>
+          <p class="gc-label">待办清单</p>
+        </div>
+      </div>
+    </div>
+
     <el-card class="login-card" shadow="always">
       <div class="login-head">
         <!-- 品牌 Logo：任务清单行 + 勾选轨迹（扁平 SVG，零依赖） -->
@@ -266,6 +386,9 @@ function revalidateIfError(prop: 'username' | 'password'): void {
 /* ═══════ 第二阶段：登录卡片容器视觉（居中规则并入本块，消除重复定义） ═══════ */
 .login-card {
   margin: auto;
+  /* 层叠保护：登录卡永远位于玻璃装饰层之上（装饰层 pointer-events:none，不影响点击） */
+  position: relative;
+  z-index: 1;
   width: min(100%, 400px);
   /* 内距交由 el-card__body 统一控制，保证左右对齐与呼吸空间 */
   padding: 0;
@@ -564,6 +687,228 @@ function revalidateIfError(prop: 'username' | 'password'): void {
 
   .login-card :deep(.el-card__body) {
     padding: 28px 22px 22px;
+  }
+}
+
+/* ═══════ 第八阶段：3D 玻璃悬浮卡片 + 鼠标视差 ═══════ */
+/* 装饰层：铺满背景 · 不响应任何鼠标事件（登录表单零干扰） · 承载 JS 视差变量 --mx/--my */
+.glass-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  --mx: 0;
+  --my: 0;
+}
+
+/* 外层：JS 视差变换（perspective + rotateX/rotateY + 视差位移 + 深度缩放）
+   幅度由每张卡的内联 --dx/--dy/--rfx/--rfy 决定 —— 不同卡片不同移动幅度，形成空间层次 */
+.glass-card {
+  position: absolute;
+  transform:
+    perspective(900px)
+    rotateX(calc(var(--my) * var(--rfx, -5deg)))
+    rotateY(calc(var(--mx) * var(--rfy, 6deg)))
+    translate3d(calc(var(--mx) * var(--dx, 24px)), calc(var(--my) * var(--dy, 14px)), 0)
+    scale(var(--gs, 1));
+  will-change: transform;
+}
+
+/* 内层：CSS 缓慢浮动（与外层视差分离，避免 transform 冲突）· 周期随卡内联变量变化 */
+.glass-inner {
+  position: relative;
+  min-width: 126px;
+  padding: 16px 18px 14px;
+  border-radius: 18px;
+  text-align: center;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.22));
+  -webkit-backdrop-filter: blur(10px) saturate(1.25);
+  backdrop-filter: blur(10px) saturate(1.25);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow:
+    /* 柔和蓝色边缘高光 */
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    /* 多层蓝色阴影：空间纵深感 */
+    0 12px 28px -10px rgba(48, 76, 140, 0.22),
+    0 28px 56px -24px rgba(48, 76, 140, 0.26);
+  animation: glassFloat var(--fdur, 7.5s) ease-in-out var(--fdel, 0s) infinite alternate;
+}
+
+/* 玻璃表面光泽：极淡高光呼吸（仅 opacity，合成器友好） */
+.glass-inner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(120% 60% at 24% 0%, rgba(255, 255, 255, 0.5), transparent 58%);
+  opacity: 0.65;
+  animation: glassSheen var(--fdur, 7.5s) ease-in-out var(--fdel, 0s) infinite alternate;
+  pointer-events: none;
+}
+
+/* 浮动时的贴地投影：同周期呼吸（仅 opacity，避免逐帧绘制 box-shadow） */
+.glass-inner::after {
+  content: '';
+  position: absolute;
+  inset: 30% 8% -14%;
+  z-index: -1;
+  border-radius: 50%;
+  background: rgba(48, 76, 140, 0.3);
+  filter: blur(20px);
+  opacity: 0.75;
+  animation: glassShadow var(--fdur, 7.5s) ease-in-out var(--fdel, 0s) infinite alternate;
+}
+
+@keyframes glassFloat {
+  from { transform: translateY(-5px); }
+  to { transform: translateY(6px); }
+}
+
+@keyframes glassSheen {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
+
+@keyframes glassShadow {
+  from { opacity: 0.55; transform: translateY(2px) scale(0.98); }
+  to { opacity: 0.85; transform: translateY(0) scale(1); }
+}
+
+/* ── 四张卡片内容样式（蓝白科技风 · 蓝色渐变图标与数据） ── */
+.gc-ring {
+  display: block;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto;
+}
+
+.gc-check {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: 0 auto;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 6px 14px -6px rgba(47, 110, 229, 0.4);
+}
+
+.gc-check svg {
+  display: block;
+  width: 26px;
+  height: 26px;
+}
+
+.gc-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 7px;
+  height: 46px;
+  padding: 0 4px;
+}
+
+.gc-bars i {
+  width: 8px;
+  height: var(--h, 50%);
+  border-radius: 3px 3px 2px 2px;
+  background: linear-gradient(180deg, #5aa2f7, #2f6bf0);
+  box-shadow: 0 2px 6px -2px rgba(47, 110, 229, 0.4);
+}
+
+.gc-bars i:first-child {
+  background: linear-gradient(180deg, #b9d4fb, #6b9df3);
+}
+
+.gc-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 0;
+}
+
+.gc-dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.6px solid #9db9e8;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.gc-dot.is-done {
+  border-color: transparent;
+  background: linear-gradient(180deg, #5aa2f7, #2f6bf0);
+}
+
+.gc-line {
+  width: var(--w, 60%);
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(90, 162, 247, 0.4);
+}
+
+.gc-row:first-child .gc-line {
+  background: linear-gradient(90deg, #5aa2f7, #2f6bf0);
+}
+
+.gc-label {
+  margin: 9px 0 0;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: #5b6d8d;
+}
+
+.gc-value {
+  margin: 2px 0 0;
+  font-size: 16px;
+  font-weight: 700;
+  background: linear-gradient(90deg, #2f6bf0, #5aa2f7);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ── 桌面端摆放：四角分布，绝不进入中央登录卡区域 ── */
+.gc-progress { left: 6.5%; top: 17%; }
+.gc-done { right: 6.5%; top: 21%; }
+.gc-chart { left: 8.5%; bottom: 16%; }
+.gc-todo { right: 8%; bottom: 19%; }
+
+/* ── 平板端：减数量（隐藏待办卡）、减幅度（缩放+位移折半） ── */
+@media (max-width: 900px) {
+  .glass-card { --gs: 0.82; }
+  .gc-todo { display: none; }
+  .gc-progress { left: 2.5%; top: 9%; }
+  .gc-done { right: 2.5%; top: 13%; }
+  .gc-chart { left: 4%; bottom: 11%; }
+}
+
+/* ── 手机端：禁用鼠标跟随（JS 按 pointer:fine 判定）；仅保留 1 张轻浮动小卡，表单优先 ── */
+@media (max-width: 480px) {
+  .glass-card { --gs: 0.7; }
+  .gc-progress,
+  .gc-chart { display: none; }
+  .gc-done { right: 5%; top: 2%; }
+}
+
+/* 矮屏手机（如 375x667）：卡片上下空间不足，全部隐藏装饰，登录表单完全优先 */
+@media (max-width: 480px) and (max-height: 700px) {
+  .glass-card { display: none; }
+}
+
+/* ── 减少动态效果：关闭浮动/光泽/投影呼吸（视差已在 JS 侧跳过） ── */
+@media (prefers-reduced-motion: reduce) {
+  .glass-inner,
+  .glass-inner::before,
+  .glass-inner::after {
+    animation: none;
+  }
+  .glass-card {
+    transform: none;
+    will-change: auto;
   }
 }
 </style>
