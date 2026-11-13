@@ -1,7 +1,23 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
-import { ArrowRight, Delete, Filter, Memo, Plus, Refresh, Search, Star, StarFilled } from '@element-plus/icons-vue'
+import {
+  ArrowRight,
+  CircleCheck,
+  Clock,
+  Close,
+  Delete,
+  Filter,
+  List,
+  Memo,
+  Plus,
+  Refresh,
+  RefreshLeft,
+  Search,
+  Star,
+  StarFilled,
+  VideoPlay,
+} from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { httpDelete, httpGet, httpPost, httpPut } from '@/api/request'
 
@@ -241,6 +257,7 @@ async function persistDiff(before: Map<number, string>): Promise<void> {
 }
 
 /** 拉全量组树；parentId 指向缺失父级的行降级为顶层（不丢数据） */
+const loadFailed = ref(false)
 async function loadTasks(): Promise<void> {
   loading.value = true
   try {
@@ -250,9 +267,11 @@ async function loadTasks(): Promise<void> {
     })
     tasks.value = buildTree((page.records ?? []).map(fromApi))
     expandedIds.value = new Set() // 新数据默认全部收起
+    loadFailed.value = false
   } catch (e) {
     console.error('loadTasks failed', e)
     tasks.value = [] // 错误提示由 request.ts 统一处理
+    loadFailed.value = true
   } finally {
     loading.value = false
   }
@@ -292,6 +311,7 @@ const filteredTasks = computed(() =>
 function resetFilter(): void {
   statusFilter.value = ''
   dateRange.value = null
+  searchText.value = '' // 重置 = 状态 + 日期 + 关键词 一并清空（纯前端过滤，不改任何 API 参数）
 }
 
 /** 轻量统计条：基于筛选后的树统计 任务总数 / 子任务数 / 已完成数 */
@@ -325,10 +345,16 @@ const statCards = computed(() => {
     })
   walk(filteredTasks.value)
   return [
-    { label: '全部任务', value: counts.all, color: 'blue', hint: `含 ${statSummary.value.sub} 个子任务` },
-    { label: '进行中', value: counts.doing, color: 'teal', hint: '正在推进' },
-    { label: '已完成', value: counts.done, color: 'green', hint: '累计完成' },
-    { label: '待处理', value: counts.todo, color: 'orange', hint: '需要关注' },
+    {
+      label: '全部任务',
+      value: counts.all,
+      color: 'blue',
+      hint: `含 ${statSummary.value.sub} 个子任务`,
+      icon: List,
+    },
+    { label: '进行中', value: counts.doing, color: 'teal', hint: '正在推进', icon: VideoPlay },
+    { label: '已完成', value: counts.done, color: 'green', hint: '累计完成', icon: CircleCheck },
+    { label: '待处理', value: counts.todo, color: 'orange', hint: '需要关注', icon: Clock },
   ]
 })
 
@@ -370,8 +396,71 @@ const visibleTasks = computed(() => {
 /** 列表右上「筛选」按钮：滚回筛选卡并聚焦首个控件（不隐藏任何字段） */
 function jumpToFilter(): void {
   const el = document.querySelector('.filter-card')
-  el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  el?.scrollIntoView({
+    behavior: prefersReduced() ? 'auto' : 'smooth',
+    block: 'center',
+  })
+  // 滚动到位后把焦点交给第一个筛选控件，键盘用户可直接继续操作
+  window.setTimeout(
+    () => document.querySelector<HTMLInputElement>('.filter-card .el-select__wrapper input')?.focus(),
+    prefersReduced() ? 0 : 320,
+  )
 }
+
+/** 系统「减少动态效果」偏好：动画/平滑滚动据此降级 */
+function prefersReduced(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+/* ── 筛选条件可视化：把当前生效的条件以可单独清除的玻璃 chip 展示（只读展示，不改查询逻辑） ── */
+const hasActiveFilter = computed(
+  () => Boolean(statusFilter.value) || Boolean(dateRange.value?.length) || Boolean(searchText.value.trim()),
+)
+
+interface FilterChip {
+  key: 'status' | 'date' | 'keyword'
+  label: string
+  clear: () => void
+}
+
+const filterChips = computed<FilterChip[]>(() => {
+  const chips: FilterChip[] = []
+  if (statusFilter.value) {
+    const hit = TAB_DEFS.find((t) => t.value === statusFilter.value)
+    chips.push({
+      key: 'status',
+      label: `状态：${hit?.label ?? statusFilter.value}`,
+      clear: () => (statusFilter.value = ''),
+    })
+  }
+  const range = dateRange.value
+  if (range && range.length === 2) {
+    chips.push({
+      key: 'date',
+      label: `计划日期：${range[0]} ~ ${range[1]}`,
+      clear: () => (dateRange.value = null),
+    })
+  }
+  const q = searchText.value.trim()
+  if (q) {
+    chips.push({ key: 'keyword', label: `关键词：${q}`, clear: () => (searchText.value = '') })
+  }
+  return chips
+})
+
+/** 空态文案：区分「加载失败 / 搜索无结果 / 筛选无结果 / 什么都没有」，避免误导 */
+const emptyText = computed(() => {
+  if (loadFailed.value) return '加载失败，请检查网络后重试'
+  const q = searchText.value.trim()
+  const hasCond = Boolean(statusFilter.value) || Boolean(dateRange.value?.length)
+  if (q && hasCond) return `没有匹配「${q}」的任务，试试放宽筛选条件`
+  if (q) return `没有找到包含「${q}」的任务`
+  if (hasCond) return '当前筛选条件下没有任务'
+  return '还没有任务，点击「新增任务」开始记录工作轨迹'
+})
+
+/** 首次加载（还没有任何数据）→ 用骨架屏占位，避免表格/统计从 0 跳到真值 */
+const showSkeleton = computed(() => loading.value && tasks.value.length === 0)
 
 /* ── 分页（纯展示层切片）：顶层任务分页，子任务随父行保留 ── */
 const page = ref(1)
@@ -380,9 +469,10 @@ const pagedTasks = computed(() => {
   const start = (page.value - 1) * pageSize.value
   return visibleTasks.value.slice(start, start + pageSize.value)
 })
-// 筛选/搜索变化时回到第一页（避免停留在空页）
+// 筛选/搜索变化时回到第一页（避免停留在空页），并清掉批量选择（条件变了，选择无意义）
 watch([statusFilter, dateRange, searchText], () => {
   page.value = 1
+  if (selectedRows.value.length) clearSelection()
 })
 
 /** 父任务已完成子任务数（进度徽标用） */
@@ -446,7 +536,7 @@ function openLogs(t: Task): void {
 async function loadLogs(t: Task): Promise<void> {
   logsLoading.value = true
   try {
-    logs.value = await httpGet<TaskLog[]>('/tasks/logs', { taskId: t.id })
+    logs.value = (await httpGet<TaskLog[]>('/tasks/logs', { taskId: t.id })) ?? []
   } catch {
     // 错误提示已由 request.ts 统一弹
   } finally {
@@ -521,6 +611,11 @@ async function toggleKey(row: Task): Promise<void> {
   const before = snapshot()
   row.isKey = row.isKey === 1 ? 0 : 1
   await persistDiff(before)
+  // 星标轻微弹跳反馈（响应式类名，随行样式一起下发）
+  starPopId.value = row.id
+  window.setTimeout(() => {
+    if (starPopId.value === row.id) starPopId.value = null
+  }, 320)
   ElMessage.success(row.isKey === 1 ? '已设为重点，首页可见' : '已取消重点')
 }
 function findTask(id: number): Task | undefined {
@@ -535,24 +630,76 @@ function findTask(id: number): Task | undefined {
   return walk(tasks.value)
 }
 
-/** 行级样式：父 / 子级 / 子孙级（深度≥2）三层分层 + 已完成行整行淡出 */
+/** 行级样式：父 / 子级 / 子孙级（深度≥2）三层分层 + 已完成行整行淡出
+ *  row-id-*：供动画/星标定位；is-collapsing：收起动画；row-star-pop：星标弹跳 */
 function rowClassName({ row }: { row: Task }): string {
   const level =
     row.parentId == null
       ? 'row-parent'
       : `row-child${(rowDepth.get(row.id) ?? 1) >= 2 ? ' row-grand' : ''}`
-  return row.status === 'done' ? `${level} row-done` : level
+  const classes = [level, `row-id-${row.id}`]
+  if (row.status === 'done') classes.push('row-done')
+  if (collapsingIds.value.has(row.id)) classes.push('is-collapsing')
+  if (enteringIds.value.has(row.id)) classes.push('is-entering')
+  if (starPopId.value === row.id) classes.push('row-star-pop')
+  return classes.join(' ')
 }
 
 /* ── 树展开：EP 原生缩进/箭头渲染在首列（复选框列）且按深度溢出到标题列，
  * 深层箭头会被标题文字盖住（点击误触行内编辑）——隐藏之，
  * 由标题列自制的 tree-indent（深度×64px 缩进）+ tree-toggle 箭头接管 ── */
 const expandedIds = ref(new Set<number>())
+/** 正在播收起动画的行（父行 + 全部子孙）：rowClassName 读它 → 触发表体重渲染打类 */
+const collapsingIds = ref(new Set<number>())
+/** 展开时播入场动画的行（父行 + 全部子孙），动画结束即清空 */
+const enteringIds = ref(new Set<number>())
+/** 重点星标点击后的短暂弹跳标记（同一套「响应式类名」机制，避免 DOM 类被重渲染冲掉） */
+const starPopId = ref<number | null>(null)
+
+/** 收集某行的全部子孙 id（含多层） */
+function descendantIds(row: Task): number[] {
+  const out: number[] = []
+  const walk = (list: Task[]) =>
+    list.forEach((t) => {
+      out.push(t.id)
+      walk(t.children)
+    })
+  walk(row.children)
+  return out
+}
+
+const COLLAPSE_MS = 170 // 收起动画时长（150~250ms 规范内）
+const ENTER_MS = 200 // 入场动画时长（略长于动画本身，避免中途摘类闪回）
+
 function toggleExpand(row: Task): void {
   const next = !expandedIds.value.has(row.id)
-  if (next) expandedIds.value.add(row.id)
-  else expandedIds.value.delete(row.id)
-  tableRef.value?.toggleRowExpansion(row, next) // 显式传目标态，避免父子组件状态漂移
+  if (next) {
+    expandedIds.value.add(row.id)
+    collapsingIds.value.delete(row.id)
+    tableRef.value?.toggleRowExpansion(row, true) // 显式传目标态，避免父子组件状态漂移
+    // EP 用 display 切换显示（行元素常驻 DOM），因此入场动画必须靠「加类」触发；
+    // 只给子孙行打类，父行本身不能动（否则展开时父行会闪一下）
+    if (!prefersReduced()) {
+      enteringIds.value = new Set(descendantIds(row))
+      window.setTimeout(() => {
+        enteringIds.value = new Set()
+      }, ENTER_MS)
+    }
+    return
+  }
+  // 收起：先让子树行播完收起动画（行高/透明度过渡），结束再真正收起
+  if (collapsingIds.value.has(row.id)) return // 动画进行中不重复触发
+  expandedIds.value.delete(row.id) // 目标态立即生效（箭头转回）；也用于动画期间再次展开的守卫
+  if (prefersReduced()) {
+    tableRef.value?.toggleRowExpansion(row, false)
+    return
+  }
+  collapsingIds.value = new Set(descendantIds(row)) // 同样只动子孙行，父行保持稳定
+  window.setTimeout(() => {
+    // 动画期间若用户又点了展开（expandedIds 被加回），跳过移除，交还给展开态
+    if (!expandedIds.value.has(row.id)) tableRef.value?.toggleRowExpansion(row, false)
+    collapsingIds.value = new Set()
+  }, COLLAPSE_MS)
 }
 
 /* ── 行选中（判断"选中大任务 → 加子任务"） ── */
@@ -721,6 +868,98 @@ async function handleDelete(row: Task): Promise<void> {
     ElMessage.success('已删除')
   }
 }
+
+/* ── 批量操作（el-table 原生 selection 列）：
+ * 全部复用现有单行能力 —— setLeaf/syncParents/persistDiff（同一套快照 diff 回写）、
+ * DELETE /tasks/{id}（后端级联），不新增任何接口与数据结构 ── */
+const selectedRows = ref<Task[]>([])
+
+function onSelectChange(rows: Task[]): void {
+  selectedRows.value = rows
+}
+
+function clearSelection(): void {
+  tableRef.value?.clearSelection()
+  selectedRows.value = []
+}
+
+/** 批量完成 / 取消完成：与行内勾选完全同一套派生与回写 */
+async function batchSetDone(done: boolean): Promise<void> {
+  const rows = [...selectedRows.value]
+  if (!rows.length) return
+  const before = snapshot()
+  rows.forEach((r) => setLeaf(r, done))
+  syncParents(tasks.value)
+  await persistDiff(before)
+  ElMessage.success(`已将 ${rows.length} 个任务标记为${done ? '完成' : '未完成'}`)
+  clearSelection()
+}
+
+/** 批量设 / 取消重点（首页「重点任务」卡同源数据） */
+async function batchSetKey(key: 0 | 1): Promise<void> {
+  const rows = [...selectedRows.value]
+  if (!rows.length) return
+  const before = snapshot()
+  rows.forEach((r) => (r.isKey = key))
+  await persistDiff(before)
+  ElMessage.success(key === 1 ? `已将 ${rows.length} 个任务设为重点` : `已取消 ${rows.length} 个重点`)
+  clearSelection()
+}
+
+/** 批量删除：必须二次确认；父子同时被选中时只删最外层，避免重复 DELETE 打出 404 */
+async function batchDelete(): Promise<void> {
+  const rows = [...selectedRows.value]
+  const n = rows.length
+  if (!n) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${n} 个任务吗？各自的子任务将一并删除，且不可恢复。`,
+      '批量删除任务',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return // 取消
+  }
+
+  const picked = new Set(rows.map((r) => r.id))
+  const hasSelectedAncestor = (r: Task): boolean => {
+    let pid = r.parentId
+    while (pid != null) {
+      if (picked.has(pid)) return true
+      pid = findTask(pid)?.parentId ?? null
+    }
+    return false
+  }
+  const targets = rows.filter((r) => !hasSelectedAncestor(r))
+
+  let ok = 0
+  let fail = 0
+  for (const r of targets) {
+    try {
+      await httpDelete(`/tasks/${r.id}`) // 与单行删除同一接口（后端级联全部后代）
+      ok += 1
+    } catch {
+      fail += 1 // 失败已由 request.ts 弹错
+    }
+  }
+
+  const before = snapshot()
+  const removeById = (list: Task[], id: number): boolean => {
+    const i = list.findIndex((t) => t.id === id)
+    if (i !== -1) {
+      list.splice(i, 1)
+      return true
+    }
+    return list.some((t) => removeById(t.children, id))
+  }
+  targets.forEach((r) => {
+    if (removeById(tasks.value, r.id) && selectedId.value === r.id) selectedId.value = null
+  })
+  syncParents(tasks.value)
+  await persistDiff(before)
+  clearSelection()
+  ElMessage.success(fail ? `已删除 ${ok} 个任务，${fail} 个失败` : `已删除 ${ok} 个任务`)
+}
 </script>
 
 <template>
@@ -736,15 +975,24 @@ async function handleDelete(row: Task): Promise<void> {
       <div class="page-header__actions">
         <el-button size="large" class="btn-ghost" @click="goReport">AI 生成报告</el-button>
         <el-button size="large" class="btn-accent" :icon="Plus" @click="addTask(null)">新增任务</el-button>
-        <el-button
-          size="large"
-          class="btn-ghost"
-          :icon="Plus"
-          :disabled="selectedId == null"
-          @click="addTask(selectedId)"
+        <!-- 未选中任务时给出入口提示（复用现有「选中行 → 加子任务」能力，不新增功能） -->
+        <el-tooltip
+          content="请先在表格中选中一个任务，再为它添加子任务"
+          placement="top"
+          :disabled="selectedId != null"
         >
-          新增子任务
-        </el-button>
+          <span class="header-btn-wrap">
+            <el-button
+              size="large"
+              class="btn-ghost"
+              :icon="Plus"
+              :disabled="selectedId == null"
+              @click="addTask(selectedId)"
+            >
+              新增子任务
+            </el-button>
+          </span>
+        </el-tooltip>
       </div>
     </div>
 
@@ -756,6 +1004,7 @@ async function handleDelete(row: Task): Promise<void> {
             placeholder="全部状态"
             clearable
             style="width: 150px"
+            popper-class="wt-select-glass"
             @change="(v) => (statusFilter = v ?? '')"
           >
             <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
@@ -770,6 +1019,7 @@ async function handleDelete(row: Task): Promise<void> {
             end-placeholder="结束日期"
             range-separator="至"
             style="width: 270px"
+            popper-class="wt-date-glass"
           />
         </el-form-item>
         <el-form-item>
@@ -778,17 +1028,35 @@ async function handleDelete(row: Task): Promise<void> {
       </el-form>
     </el-card>
 
-    <!-- 任务统计卡片：口径与原统计条一致（基于当前筛选结果的真实数据） -->
+    <!-- 任务统计卡片：口径与原统计条一致（基于当前筛选结果的真实数据）
+         材质 / 图标底座 / 字号与首页 KPI 卡同源（tokens.css 规范），不加任何虚构数据 -->
     <section class="stat-row">
-      <div v-for="s in statCards" :key="s.label" class="stat-card">
-        <div class="stat-card__label">{{ s.label }}</div>
-        <div class="stat-card__value" :class="`is-${s.color}`">{{ s.value }}</div>
-        <div class="stat-card__hint">{{ s.hint }}</div>
+      <div v-for="s in statCards" :key="s.label" class="stat-card" :class="`is-${s.color}`">
+        <span class="stat-card__icon" aria-hidden="true">
+          <span class="stat-card__orb">
+            <el-icon :size="22"><component :is="s.icon" /></el-icon>
+          </span>
+        </span>
+        <div class="stat-card__body">
+          <div class="stat-card__label">{{ s.label }}</div>
+          <div class="stat-card__value">
+            <!-- 首次加载用骨架数字占位，避免 0 → 真值的跳动 -->
+            <el-skeleton-item v-if="showSkeleton" variant="text" class="stat-skel" />
+            <template v-else>{{ s.value }}</template>
+          </div>
+          <div class="stat-card__hint">{{ s.hint }}</div>
+        </div>
       </div>
     </section>
 
     <!-- 任务树：默认只显示大任务；点击单元格内联编辑 -->
-    <el-card v-loading="loading" shadow="never">
+    <el-card
+      v-loading="loading && !showSkeleton"
+      class="table-card"
+      shadow="never"
+      element-loading-text="加载任务中…"
+      element-loading-background="rgba(255, 255, 255, 0.78)"
+    >
       <div class="list-head">
         <div class="list-tabs" role="tablist">
           <button
@@ -815,12 +1083,32 @@ async function handleDelete(row: Task): Promise<void> {
         </div>
       </div>
       <div class="table-meta">
-        共 <span class="table-meta__num">{{ statSummary.total }}</span> 个任务（含
-        <span class="table-meta__num">{{ statSummary.sub }}</span> 个子任务）· 已完成
-        <span class="table-meta__num table-meta__num--done">{{ statSummary.done }}</span>
+        <span>
+          共 <span class="table-meta__num">{{ statSummary.total }}</span> 个任务（含
+          <span class="table-meta__num">{{ statSummary.sub }}</span> 个子任务）· 已完成
+          <span class="table-meta__num table-meta__num--done">{{ statSummary.done }}</span>
+        </span>
+        <!-- 当前生效的筛选条件：可单独清除，纯展示层 -->
+        <span v-if="filterChips.length" class="filter-chips">
+          <span v-for="c in filterChips" :key="c.key" class="filter-chip">
+            {{ c.label }}
+            <button
+              type="button"
+              class="filter-chip__x"
+              :aria-label="`清除筛选条件：${c.label}`"
+              @click="c.clear()"
+            >
+              <el-icon :size="11"><Close /></el-icon>
+            </button>
+          </span>
+        </span>
       </div>
 
+      <!-- 首次加载：骨架屏占位（与表头/行高接近，避免内容突然跳动） -->
+      <el-skeleton v-if="showSkeleton" class="table-skeleton" animated :rows="8" />
+
       <el-table
+        v-else
         ref="tableRef"
         :data="pagedTasks"
         row-key="id"
@@ -829,7 +1117,11 @@ async function handleDelete(row: Task): Promise<void> {
         highlight-current-row
         style="width: 100%"
         @current-change="onCurrentChange"
+        @selection-change="onSelectChange"
       >
+        <!-- 批量选择：勾选后底部弹出悬浮批量操作栏（取消勾选即收起） -->
+        <el-table-column type="selection" width="46" align="center" fixed />
+
         <el-table-column label="完成" width="64" align="center">
           <template #default="{ row }">
             <el-checkbox
@@ -1045,7 +1337,44 @@ async function handleDelete(row: Task): Promise<void> {
         </el-table-column>
 
         <template #empty>
-          <el-empty description="暂无任务，点击右上角「新增任务」创建" :image-size="80" />
+          <!-- 空状态：轻拟物 3D 插画 + 场景化文案 + 现有功能入口（不新增业务） -->
+          <div class="empty-state">
+            <div class="empty-art" aria-hidden="true">
+              <span class="empty-art__ring" />
+              <span class="empty-art__card">
+                <span class="empty-art__badge">
+                  <el-icon :size="14"><CircleCheck /></el-icon>
+                </span>
+                <span class="empty-art__line empty-art__line--1" />
+                <span class="empty-art__line empty-art__line--2" />
+                <span class="empty-art__line empty-art__line--3" />
+              </span>
+              <span class="empty-art__orb empty-art__orb--1" />
+              <span class="empty-art__orb empty-art__orb--2" />
+            </div>
+            <p class="empty-state__text">{{ emptyText }}</p>
+            <div class="empty-state__actions">
+              <el-button
+                v-if="loadFailed"
+                class="btn-accent"
+                :icon="Refresh"
+                @click="loadTasks"
+              >
+                重新加载
+              </el-button>
+              <el-button
+                v-else-if="hasActiveFilter"
+                class="btn-ghost"
+                :icon="Refresh"
+                @click="resetFilter"
+              >
+                清除筛选条件
+              </el-button>
+              <el-button v-else class="btn-accent" :icon="Plus" @click="addTask(null)">
+                新增任务
+              </el-button>
+            </div>
+          </div>
         </template>
       </el-table>
 
@@ -1063,7 +1392,33 @@ async function handleDelete(row: Task): Promise<void> {
       </div>
     </el-card>
 
-    <!-- 跟进记录抽屉：工作留痕时间线 -->
+    <!-- 批量操作悬浮栏：有勾选才出现，取消选择自动收起（动画 200ms） -->
+    <transition name="batch-bar">
+      <div v-if="selectedRows.length" class="batch-bar" role="region" aria-label="批量操作">
+        <span class="batch-bar__count">已选 <b>{{ selectedRows.length }}</b> 项</span>
+        <span class="batch-bar__sep" aria-hidden="true" />
+        <button type="button" class="batch-btn batch-btn--done" @click="batchSetDone(true)">
+          <el-icon :size="14"><CircleCheck /></el-icon>
+          批量完成
+        </button>
+        <button type="button" class="batch-btn" @click="batchSetDone(false)">
+          <el-icon :size="14"><RefreshLeft /></el-icon>
+          取消完成
+        </button>
+        <button type="button" class="batch-btn" @click="batchSetKey(1)">
+          <el-icon :size="14"><Star /></el-icon>
+          设为重点
+        </button>
+        <button type="button" class="batch-btn batch-btn--danger" @click="batchDelete">
+          <el-icon :size="14"><Delete /></el-icon>
+          删除
+        </button>
+        <span class="batch-bar__sep" aria-hidden="true" />
+        <button type="button" class="batch-btn batch-btn--ghost" @click="clearSelection">取消选择</button>
+      </div>
+    </transition>
+
+    <!-- 跟进记录抽屉：工作留痕时间线（项目现有的唯一“详情”入口，沿用不替换） -->
     <el-drawer v-model="logDrawer" size="440px" :title="`跟进记录 · ${logTask?.title || '未命名任务'}`">
       <div class="log-form">
         <el-select v-model="logForm.logType" style="width: 150px">
@@ -1083,8 +1438,14 @@ async function handleDelete(row: Task): Promise<void> {
 
       <el-divider />
 
-      <div v-loading="logsLoading">
-        <el-timeline v-if="logs.length > 0" class="log-timeline">
+      <div
+        v-loading="logsLoading && logs.length > 0"
+        element-loading-text="加载记录中…"
+        element-loading-background="rgba(255, 255, 255, 0.75)"
+      >
+        <!-- 详情（跟进记录）首次加载：骨架屏占位 -->
+        <el-skeleton v-if="logsLoading && !logs.length" class="log-skeleton" animated :rows="4" />
+        <el-timeline v-else-if="logs.length > 0" class="log-timeline">
           <el-timeline-item
             v-for="l in logs"
             :key="l.id"
@@ -1109,14 +1470,13 @@ async function handleDelete(row: Task): Promise<void> {
 
 <style scoped>
 .task-page {
-  /* 品牌色板（与首页一致）：品牌蓝 / 主操作青绿 / 白灰底 */
+  /* 页面私有调色板：EP 组件与表格/标签沿用；文字色、背景、圆角、阴影
+     统一走 src/styles/tokens.css（:root），与首页同源 */
   --wt-blue: #3988e8;
   --wt-teal: #13b8a6;
   --wt-green: #22c55e;
   --wt-orange: #d99543;
   --wt-border: #e5eaf0;
-  --wt-text: #25364a;
-  --wt-muted: #8796a8;
 
   --el-color-primary: #3988e8;
   --el-color-primary-light-3: color-mix(in srgb, #3988e8 70%, #fff);
@@ -1129,13 +1489,19 @@ async function handleDelete(row: Task): Promise<void> {
   --el-table-row-hover-bg-color: #f2f7ff;
   --el-table-border-color: #eef1f6;
 
+  position: relative;
   display: flex;
+  flex: 1 0 auto; /* 与首页一致：填满导航以下的剩余视口，避免 100vh 造成多余滚动 */
   flex-direction: column;
-  gap: 16px;
-  padding: 24px;
-  min-height: 100vh;
+  gap: var(--wt-gap);
+  padding: 20px 24px 28px;
   box-sizing: border-box;
-  background: #f2f4f7;
+  /* 浅蓝灰底 + 极轻的蓝/青环境光（静态渐变，不加粒子与复杂装饰） */
+  background:
+    radial-gradient(1000px 560px at 6% -10%, rgba(120, 168, 255, 0.2), transparent 62%),
+    radial-gradient(860px 520px at 98% 4%, rgba(32, 197, 193, 0.13), transparent 62%),
+    radial-gradient(760px 460px at 50% 104%, rgba(124, 108, 240, 0.05), transparent 64%),
+    var(--wt-bg);
 }
 
 .page-header {
@@ -1149,15 +1515,17 @@ async function handleDelete(row: Task): Promise<void> {
 .page-header__text h1 {
   margin: 0;
   color: var(--wt-text);
-  font-size: 24px;
+  font-size: 26px;
   font-weight: 800;
-  letter-spacing: 0.5px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
 }
 
 .page-header__text p {
   margin: 8px 0 0;
   color: var(--wt-muted);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .page-header__actions {
@@ -1165,50 +1533,114 @@ async function handleDelete(row: Task): Promise<void> {
   gap: 12px;
 }
 
-/* flex + gap 下抵消 EP 相邻按钮的默认 margin，避免间距叠加 */
-.page-header__actions :deep(.el-button + .el-button) {
+/* flex + gap 下抵消 EP 相邻按钮的默认 margin，避免间距叠加
+   （新增子任务外包了一层 tooltip span，故直接归零所有按钮的左 margin） */
+.page-header__actions :deep(.el-button) {
   margin-left: 0;
 }
 
-/* 主操作：青绿实底；次要操作：白底浅边框——统一高度与圆角 */
-.btn-accent {
-  height: 40px;
-  padding: 0 20px;
-  border: 1px solid var(--wt-teal);
-  border-radius: 10px;
-  background: var(--wt-teal);
-  color: #fff;
-  font-weight: 600;
+/* tooltip 包裹层：只负责占位，不引入额外间距 */
+.header-btn-wrap {
+  display: inline-flex;
 }
 
-.btn-accent:hover,
-.btn-accent:focus {
-  border-color: #0f9c8c;
-  background: #0f9c8c;
+/* 主操作：蓝青渐变 3D 立体按钮（与首页「新增任务」同款）；次要操作：轻玻璃质感
+   —— 统一高度 var(--wt-btn-h)，hover 上浮 + 阴影变化，active 按压反馈 */
+.btn-accent.el-button {
+  height: var(--wt-btn-h);
+  padding: 0 20px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 13px;
+  background: linear-gradient(135deg, var(--wt-cyan) 0%, var(--wt-primary) 100%);
   color: #fff;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  box-shadow:
+    0 10px 22px -10px rgba(57, 120, 246, 0.5),
+    0 4px 10px -6px rgba(32, 197, 193, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -2px 4px rgba(20, 60, 120, 0.15);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease;
 }
 
-.btn-ghost {
-  height: 40px;
-  padding: 0 20px;
-  border: 1px solid var(--wt-border);
-  border-radius: 10px;
-  background: #fff;
+.btn-accent.el-button:hover,
+.btn-accent.el-button:focus {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: linear-gradient(135deg, #2ad5d1 0%, #4a86fa 100%);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow:
+    0 14px 28px -12px rgba(57, 120, 246, 0.6),
+    0 6px 14px -6px rgba(32, 197, 193, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.btn-accent.el-button:active {
+  transform: translateY(1px) scale(0.99);
+  box-shadow:
+    0 6px 14px -8px rgba(57, 120, 246, 0.45),
+    inset 0 2px 5px rgba(20, 60, 120, 0.18);
+}
+
+.btn-ghost.el-button {
+  height: var(--wt-btn-h);
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.72);
   color: var(--wt-text);
-  font-weight: 500;
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 8px 18px -14px rgba(36, 50, 74, 0.35);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease;
 }
 
-.btn-ghost:hover,
-.btn-ghost:focus {
-  border-color: var(--wt-blue);
-  color: var(--wt-blue);
+.btn-ghost.el-button:hover,
+.btn-ghost.el-button:focus {
+  border-color: rgba(57, 120, 246, 0.28);
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--wt-primary);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 12px 22px -14px rgba(57, 120, 246, 0.45);
 }
 
-/* ── 筛选区：独立白卡，控件统一高度/圆角/浅灰描边，聚焦品牌蓝 ── */
+.btn-ghost.el-button:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+/* 禁用态（如「新增子任务」未选中任务）：仍走玻璃底但明显降权 */
+.btn-ghost.el-button:disabled {
+  border-color: var(--wt-card-border);
+  background: rgba(255, 255, 255, 0.5);
+  color: #9aa8b8;
+  box-shadow: none;
+  transform: none;
+}
+
+/* ── 筛选区：玻璃拟态悬浮面板（白半透明 + 18px 圆角 + 细边框 + 柔和环境阴影）
+      控件统一圆角、清晰的 hover/focus 状态，筛选逻辑与字段完全不变 ── */
 .filter-card {
-  border: 1px solid var(--wt-border);
-  border-radius: 14px;
-  box-shadow: 0 1px 2px rgba(37, 54, 74, 0.03);
+  border: 1px solid var(--wt-card-border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--wt-shadow-card);
+  backdrop-filter: blur(18px) saturate(1.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+}
+
+.filter-card :deep(.el-card__body) {
+  padding: 18px 20px;
 }
 
 .filter-card :deep(.el-form-item) {
@@ -1218,76 +1650,203 @@ async function handleDelete(row: Task): Promise<void> {
 .filter-card :deep(.el-form-item__label) {
   color: var(--wt-muted);
   font-size: 13px;
+  font-weight: 600;
 }
 
 .filter-card :deep(.el-input__wrapper),
 .filter-card :deep(.el-select__wrapper) {
   min-height: 38px;
+  padding: 1px 12px;
   border: 1px solid var(--wt-border);
-  border-radius: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.9);
   box-shadow: none;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease;
 }
 
 .filter-card :deep(.el-input__wrapper:hover),
-.filter-card :deep(.el-select__wrapper:hover),
-/* 聚焦品牌蓝描边（EP 聚焦内阴影已被上方 box-shadow:none 收掉，由边框承担反馈） */
+.filter-card :deep(.el-select__wrapper:hover) {
+  border-color: rgba(57, 120, 246, 0.45);
+  background: #fff;
+}
+
+/* 聚焦：品牌蓝描边 + 柔和光圈（EP 聚焦内阴影已被上方 box-shadow:none 收掉，由本层承担反馈） */
 .filter-card :deep(.el-input__wrapper.is-focus),
 .filter-card :deep(.el-select__wrapper.is-focused) {
   border-color: var(--wt-blue);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(57, 120, 246, 0.14);
 }
 
 /* 统一筛选区控件高度：下拉框 / 日期选择器 / 重置按钮同 38px */
 .filter-card :deep(.el-button) {
   height: 38px;
+  border-radius: 10px;
 }
 
-/* ── 任务统计卡片 ── */
+/* 重置：图标 + 文字组合的轻玻璃小按钮 */
+.filter-card :deep(.el-button.btn-ghost) {
+  border-color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.78);
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 #fff;
+}
+
+/* ── 任务统计卡片：与首页 KPI 卡同源（材质 / 圆角 / 阴影 / 图标底座 / 字号）
+      数据口径不变，仍来自筛选后的真实统计，不加任何虚构柱状图 ── */
 .stat-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--wt-gap);
 }
 
 .stat-card {
-  padding: 16px 20px;
-  border: 1px solid var(--wt-border);
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(37, 54, 74, 0.03);
+  --accent: var(--wt-primary);
+  --accent-soft: #78a8ff;
+  --glow: rgba(57, 120, 246, 0.24);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  min-height: 126px;
+  padding: 18px 20px;
+  overflow: hidden;
+  border: 1px solid var(--wt-card-border);
+  border-radius: var(--wt-radius);
+  background:
+    radial-gradient(190px 130px at 100% 0%, var(--glow), transparent 72%),
+    linear-gradient(150deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.66));
+  box-shadow: var(--wt-shadow-card);
+  transition:
+    transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 0.32s ease,
+    border-color 0.32s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-5px);
+  border-color: rgba(255, 255, 255, 0.95);
+  box-shadow: var(--wt-shadow-hover);
+  will-change: transform;
+}
+
+/* 四态主题色（与首页 KPI 一致：蓝 / 青 / 绿 / 橙） */
+.stat-card.is-blue {
+  --accent: var(--wt-primary);
+  --accent-soft: #78a8ff;
+  --glow: rgba(57, 120, 246, 0.24);
+}
+
+.stat-card.is-teal {
+  --accent: var(--wt-cyan);
+  --accent-soft: #8ff3ee;
+  --glow: rgba(32, 197, 193, 0.22);
+}
+
+.stat-card.is-green {
+  --accent: var(--wt-green);
+  --accent-soft: #7be0b4;
+  --glow: rgba(37, 185, 120, 0.2);
+}
+
+.stat-card.is-orange {
+  --accent: var(--wt-orange);
+  --accent-soft: #ffd39a;
+  --glow: rgba(255, 166, 61, 0.22);
+}
+
+/* 立体圆形图标底座：58px 白底圆 + 44px 渐变球（与首页 KPI 同规格） */
+.stat-card__icon {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(232, 240, 252, 0.62));
+  box-shadow:
+    inset 0 1px 0 #fff,
+    inset 0 -1px 0 rgba(120, 168, 255, 0.12),
+    0 8px 18px -14px rgba(36, 50, 74, 0.24);
+}
+
+.stat-card__icon::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.7), transparent 45%);
+  pointer-events: none;
+}
+
+.stat-card__orb {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: #fff;
+  background: linear-gradient(145deg, var(--accent-soft) 0%, var(--accent) 62%, var(--accent) 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.72),
+    inset 0 -3px 6px rgba(20, 40, 80, 0.16),
+    0 6px 14px -8px var(--glow);
+}
+
+.stat-card:hover .stat-card__orb {
+  animation: statIconFloat 2.4s ease-in-out infinite;
+}
+
+@keyframes statIconFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.stat-card__body {
+  flex: 1;
+  min-width: 0;
 }
 
 .stat-card__label {
-  color: var(--wt-muted);
+  color: #44546c;
   font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .stat-card__value {
-  margin: 4px 0;
-  font-size: 28px;
+  margin: 3px 0 4px;
+  color: #1f2d43;
+  font-size: 44px;
   font-weight: 800;
-  line-height: 1.15;
+  line-height: 1;
+  letter-spacing: -0.045em;
   font-variant-numeric: tabular-nums;
-}
-
-.stat-card__value.is-blue {
-  color: var(--wt-blue);
-}
-
-.stat-card__value.is-teal {
-  color: var(--wt-teal);
-}
-
-.stat-card__value.is-green {
-  color: var(--wt-green);
-}
-
-.stat-card__value.is-orange {
-  color: var(--wt-orange);
+  text-shadow: 0 2px 10px rgba(36, 50, 74, 0.05);
 }
 
 .stat-card__hint {
-  color: var(--wt-muted);
+  color: #74839a;
   font-size: 12px;
+  font-weight: 500;
+}
+
+/* ── 任务表容器：与首页卡片同一套圆角 / 描边 / 阴影规范（表格内部不动）
+      不加 backdrop-filter：整块大面积模糊收益极低、滚动时开销明显 ── */
+.table-card {
+  border: 1px solid var(--wt-card-border);
+  border-radius: var(--wt-radius);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--wt-shadow-card);
 }
 
 /* ── 列表头：状态 Tab（品牌蓝文字 + 底部指示线）+ 右侧搜索/筛选 ── */
@@ -1372,6 +1931,11 @@ async function handleDelete(row: Task): Promise<void> {
 }
 
 .table-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
   margin-bottom: 12px;
   color: var(--el-text-color-secondary);
   font-size: 13px;
@@ -1640,6 +2204,34 @@ async function handleDelete(row: Task): Promise<void> {
   }
 }
 
+/* 统计卡断点：与首页 KPI 一致（≤1180 两列、≤640 单列），
+   否则四列在窄屏会把图标底座之外的文字挤成 0 宽而“消失” */
+@media (max-width: 1180px) {
+  .stat-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .stat-row {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .stat-card {
+    min-height: 112px;
+    padding: 16px;
+  }
+
+  .stat-card__value {
+    font-size: 36px;
+  }
+
+  .page-header__text h1 {
+    font-size: 23px;
+  }
+}
+
 /* 标题外层：点击编辑热区 + hover 底色 */
 .task-title-wrap {
   padding: 2px 6px;
@@ -1760,64 +2352,277 @@ async function handleDelete(row: Task): Promise<void> {
 }
 
 /* ── 分页区：品牌蓝当前页，白底浅灰边框页码 ── */
+/* ── 空状态：轻拟物 3D 插画 + 场景化文案 + 现有功能入口 ── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 26px 0 30px;
+  text-align: center;
+}
+
+.empty-art {
+  position: relative;
+  width: 148px;
+  height: 96px;
+  margin-bottom: 8px;
+}
+
+.empty-art__ring {
+  position: absolute;
+  left: 50%;
+  top: 54%;
+  width: 92px;
+  height: 92px;
+  border: 1px solid rgba(57, 120, 246, 0.16);
+  border-radius: 50%;
+  box-shadow: inset 0 0 24px rgba(255, 255, 255, 0.7);
+  transform: translate(-50%, -50%);
+}
+
+.empty-art__card {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 104px;
+  height: 68px;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 16px;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.98), rgba(238, 245, 255, 0.94));
+  box-shadow:
+    0 18px 34px -22px rgba(57, 120, 246, 0.45),
+    inset 0 1px 0 #fff,
+    inset 0 -12px 22px -20px rgba(57, 120, 246, 0.4);
+  transform: translate(-50%, -50%) rotate(-4deg);
+  animation: wt-empty-card 4.6s ease-in-out infinite;
+}
+
+.empty-art__badge {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #fff;
+  background: linear-gradient(145deg, #8ff3ee, var(--wt-teal));
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.7),
+    0 6px 12px -6px rgba(19, 184, 166, 0.6);
+}
+
+.empty-art__line {
+  position: absolute;
+  left: 14px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(137, 151, 172, 0.2);
+}
+
+.empty-art__line--1 {
+  top: 24px;
+  width: 40px;
+}
+
+.empty-art__line--2 {
+  top: 37px;
+  width: 58px;
+}
+
+.empty-art__line--3 {
+  top: 50px;
+  width: 32px;
+  background: rgba(57, 120, 246, 0.26);
+}
+
+.empty-art__orb {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #fff, rgba(120, 168, 255, 0.42));
+  box-shadow: 0 8px 16px -8px rgba(57, 120, 246, 0.5);
+  animation: wt-orb-float 5.2s ease-in-out infinite;
+}
+
+.empty-art__orb--1 {
+  right: 8px;
+  bottom: 10px;
+  width: 14px;
+  height: 14px;
+}
+
+.empty-art__orb--2 {
+  left: 10px;
+  top: 12px;
+  width: 9px;
+  height: 9px;
+  animation-delay: 0.9s;
+}
+
+.empty-state__text {
+  margin: 0;
+  color: var(--wt-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.7;
+}
+
+.empty-state__actions {
+  margin-top: 12px;
+}
+
+@keyframes wt-empty-card {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) rotate(-4deg) translateY(0);
+  }
+  50% {
+    transform: translate(-50%, -50%) rotate(-4deg) translateY(-5px);
+  }
+}
+
+@keyframes wt-orb-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+/* ── 骨架屏：与页面同色系的浅蓝占位（首屏 / 抽屉详情） ── */
+.table-skeleton {
+  padding: 14px 4px 6px;
+  --el-skeleton-color: #eef3fb;
+  --el-skeleton-to-color: #e3ecf9;
+}
+
+.stat-skel {
+  width: 68px;
+  height: 36px;
+  border-radius: 8px;
+  --el-skeleton-color: #eef3fb;
+  --el-skeleton-to-color: #e3ecf9;
+}
+
+.log-skeleton {
+  --el-skeleton-color: #eef3fb;
+  --el-skeleton-to-color: #e3ecf9;
+}
+
 .pagination {
   display: flex;
   justify-content: flex-end;
   margin-top: 14px;
 }
 
+/* ── 分页：统一圆角 / 浅底 / 轻量 hover，当前页渐变高亮 ── */
 .pagination :deep(.el-pagination) {
   --el-pagination-bg-color: transparent;
   --el-pagination-button-width: 32px;
   --el-pagination-button-height: 32px;
+  --el-pagination-text-color: var(--wt-text);
+  --el-pagination-button-color: var(--wt-text);
   gap: 6px;
 }
 
 .pagination :deep(.el-pager li) {
   min-width: 32px;
   height: 32px;
-  border: 1px solid var(--wt-border);
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid var(--wt-card-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
   color: var(--wt-text);
   font-size: 13px;
+  font-weight: 600;
   line-height: 30px;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.15s ease;
 }
 
 .pagination :deep(.el-pager li:hover) {
-  border-color: var(--wt-blue);
+  border-color: rgba(57, 120, 246, 0.4);
+  background: rgba(57, 120, 246, 0.08);
   color: var(--wt-blue);
 }
 
-.pagination :deep(.el-pager li.is-active) {
-  border-color: var(--wt-blue);
-  background: var(--wt-blue);
+.pagination :deep(.el-pager li:active) {
+  transform: scale(0.96);
+}
+
+.pagination :deep(.el-pager li.is-active),
+.pagination :deep(.el-pager li.is-active:hover) {
+  border-color: transparent;
+  background: linear-gradient(135deg, #78a8ff 0%, var(--wt-blue) 100%);
   color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 5px 12px -6px rgba(57, 120, 246, 0.55);
 }
 
 .pagination :deep(.el-pagination button) {
-  border: 1px solid var(--wt-border);
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid var(--wt-card-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
   color: var(--wt-text);
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.15s ease;
 }
 
 .pagination :deep(.el-pagination button:hover) {
-  border-color: var(--wt-blue);
+  border-color: rgba(57, 120, 246, 0.4);
+  background: rgba(57, 120, 246, 0.08);
   color: var(--wt-blue);
 }
 
+.pagination :deep(.el-pagination button:active) {
+  transform: scale(0.96);
+}
+
+.pagination :deep(.el-pagination button:disabled),
+.pagination :deep(.el-pager li.is-disabled) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .pagination :deep(.el-pagination__total),
-.pagination :deep(.el-pagination__jump),
-.pagination :deep(.el-select__wrapper) {
+.pagination :deep(.el-pagination__jump) {
   color: var(--wt-muted);
   font-size: 13px;
 }
 
+/* 每页数量选择 / 跳页输入：与筛选控件同语言的浅底圆角 + 聚焦光圈 */
+.pagination :deep(.el-select__wrapper),
 .pagination :deep(.el-input__wrapper) {
-  border: 1px solid var(--wt-border);
-  border-radius: 8px;
+  min-height: 32px;
+  border: 1px solid var(--wt-card-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
   box-shadow: none;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.pagination :deep(.el-select__wrapper:hover),
+.pagination :deep(.el-input__wrapper:hover) {
+  border-color: rgba(57, 120, 246, 0.4);
+}
+
+.pagination :deep(.el-input__wrapper.is-focus),
+.pagination :deep(.el-select__wrapper.is-focused) {
+  border-color: var(--wt-blue);
+  box-shadow: 0 0 0 3px rgba(57, 120, 246, 0.14);
 }
 
 /* ── 跟进记录抽屉 ── */
@@ -1850,5 +2655,432 @@ async function handleDelete(row: Task): Promise<void> {
   word-break: break-word;
   font-size: 13px;
   line-height: 1.6;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   第三阶段：交互体验
+   过渡统一 150~250ms；所有动画在 prefers-reduced-motion 下降级
+   ═══════════════════════════════════════════════════════════════ */
+
+/* 本页 EP 组件（抽屉滑入、淡入淡出等）统一 0.22s */
+.task-page {
+  --el-transition-duration: 0.22s;
+}
+
+/* ── 任务行 hover：底色柔和过渡（行高/透明度过渡同时供收起动画复用） ── */
+:deep(.el-table td.el-table__cell) {
+  transition:
+    background-color 0.18s ease,
+    padding-top 0.17s ease,
+    padding-bottom 0.17s ease,
+    opacity 0.17s ease;
+}
+
+/* 收起：行高（上下 padding）+ 透明度一起过渡 → 平滑高度收起 */
+:deep(.el-table .el-table__row.is-collapsing > td.el-table__cell) {
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+}
+
+/* 展开：子任务行入场滑入（EP 用 display 切换显示、行元素常驻 DOM，
+   故由 toggleExpand 打 is-entering 类触发；180ms 后摘类不复播） */
+:deep(.el-table .el-table__row.is-entering) {
+  animation: wt-row-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes wt-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── 完成复选框：hover 轻放大、按压回弹、勾选瞬间弹性反馈 ── */
+:deep(.el-table .el-checkbox) {
+  transition: transform 0.18s ease;
+}
+
+:deep(.el-table .el-checkbox:hover) {
+  transform: scale(1.08);
+}
+
+:deep(.el-table .el-checkbox:active) {
+  transform: scale(0.9);
+}
+
+:deep(.el-table .el-checkbox.is-checked .el-checkbox__inner) {
+  animation: wt-check-pop 0.22s ease;
+}
+
+@keyframes wt-check-pop {
+  0% {
+    transform: scale(0.7);
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ── 重点星标：点击后轻微弹跳（行类 row-star-pop 由 toggleKey 下发） ── */
+:deep(.el-table .row-star-pop .task-title__star),
+:deep(.el-table .row-star-pop .btn-key) {
+  display: inline-flex;
+  transform-origin: center;
+  animation: wt-star-pop 0.3s ease;
+}
+
+@keyframes wt-star-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.35);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ── 表内文字按钮 / Tab：轻微按压反馈 ── */
+:deep(.el-table .el-button) {
+  transition:
+    transform 0.15s ease,
+    color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+:deep(.el-table .el-button:active) {
+  transform: scale(0.96);
+}
+
+.list-tab:active {
+  transform: scale(0.97);
+}
+
+/* ── 筛选条件 chip：可单独清除 ── */
+.filter-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px 3px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--wt-text);
+  font-size: 12px;
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 4px 10px -8px rgba(36, 50, 74, 0.35);
+}
+
+.filter-chip__x {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(137, 151, 172, 0.16);
+  color: var(--wt-muted);
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.15s ease;
+}
+
+.filter-chip__x:hover {
+  background: rgba(245, 63, 63, 0.14);
+  color: var(--el-color-danger);
+}
+
+.filter-chip__x:active {
+  transform: scale(0.9);
+}
+
+.filter-chip__x:focus-visible {
+  outline: 2px solid rgba(57, 120, 246, 0.5);
+  outline-offset: 1px;
+}
+
+/* ── 搜索框聚焦光圈（与筛选控件同语言） ── */
+.list-search :deep(.el-input__wrapper.is-focus) {
+  border-color: var(--wt-blue);
+  box-shadow: 0 0 0 3px rgba(57, 120, 246, 0.14);
+}
+
+/* ── 批量操作悬浮栏（有勾选才出现；transition 由 Vue 的 batch-bar 名驱动） ── */
+.batch-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 20px 44px -24px rgba(36, 50, 74, 0.5);
+  backdrop-filter: blur(18px) saturate(1.1);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+  transform: translateX(-50%);
+}
+
+.batch-bar__count {
+  padding: 0 8px;
+  color: var(--wt-text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.batch-bar__count b {
+  color: var(--wt-primary);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-bar__sep {
+  width: 1px;
+  height: 20px;
+  background: rgba(137, 151, 172, 0.26);
+}
+
+.batch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--wt-text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.15s ease;
+}
+
+.batch-btn:hover {
+  border-color: rgba(57, 120, 246, 0.28);
+  background: #fff;
+  color: var(--wt-primary);
+  box-shadow: 0 8px 16px -12px rgba(57, 120, 246, 0.55);
+}
+
+.batch-btn:active {
+  transform: translateY(1px) scale(0.97);
+}
+
+.batch-btn:focus-visible {
+  outline: 2px solid rgba(57, 120, 246, 0.5);
+  outline-offset: 2px;
+}
+
+.batch-btn--done:hover {
+  border-color: rgba(37, 185, 120, 0.3);
+  color: var(--wt-green);
+  box-shadow: 0 8px 16px -12px rgba(37, 185, 120, 0.5);
+}
+
+.batch-btn--danger:hover {
+  border-color: rgba(245, 63, 63, 0.3);
+  color: var(--el-color-danger);
+  box-shadow: 0 8px 16px -12px rgba(245, 63, 63, 0.45);
+}
+
+.batch-btn--ghost {
+  color: var(--wt-muted);
+}
+
+.batch-bar-enter-active,
+.batch-bar-leave-active {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.batch-bar-enter-from,
+.batch-bar-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 14px);
+}
+
+/* 小屏：批量栏改通栏换行（必须写在基础规则之后，同特异性后者胜） */
+@media (max-width: 640px) {
+  .batch-bar {
+    left: 12px;
+    right: 12px;
+    bottom: 14px;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 5px;
+    transform: none;
+  }
+
+  .batch-bar__sep {
+    display: none;
+  }
+
+  .batch-btn {
+    padding: 0 10px;
+    font-size: 12.5px;
+  }
+
+  .batch-bar-enter-from,
+  .batch-bar-leave-to {
+    transform: translateY(14px);
+  }
+}
+
+/* ── 跟进记录抽屉：统一卡片层级 + 玻璃拟态（抽屉未 teleport，scoped 可命中） ── */
+:deep(.el-drawer) {
+  border-left: 1px solid var(--wt-card-border);
+  background:
+    radial-gradient(420px 300px at 100% 0%, rgba(57, 120, 246, 0.08), transparent 70%),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.97), rgba(246, 250, 255, 0.93));
+  box-shadow: -30px 0 70px -46px rgba(36, 50, 74, 0.6);
+  backdrop-filter: blur(18px) saturate(1.1);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+}
+
+:deep(.el-drawer__header) {
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(137, 151, 172, 0.16);
+  color: var(--wt-text);
+  font-weight: 700;
+}
+
+:deep(.el-drawer__body) {
+  padding: 18px 20px;
+}
+
+:deep(.el-drawer__close-btn) {
+  border-radius: 8px;
+}
+
+/* ── 减少动态效果：尊重系统设置 ── */
+@media (prefers-reduced-motion: reduce) {
+  .task-page {
+    --el-transition-duration: 0.01ms;
+  }
+
+  :deep(.el-table .el-table__row.is-entering),
+  :deep(.el-table .row-star-pop .task-title__star),
+  :deep(.el-table .row-star-pop .btn-key),
+  :deep(.el-table .el-checkbox.is-checked .el-checkbox__inner),
+  .empty-art__card,
+  .empty-art__orb,
+  .table-skeleton,
+  .stat-skel,
+  .log-skeleton,
+  .table-skeleton *,
+  .log-skeleton * {
+    animation: none !important;
+  }
+
+  :deep(.el-table td.el-table__cell),
+  :deep(.el-table .el-checkbox),
+  .batch-btn,
+  .filter-chip__x,
+  .list-tab,
+  .pagination :deep(.el-pager li),
+  .pagination :deep(.el-pagination button) {
+    transition: none !important;
+  }
+
+  :deep(.el-table .el-checkbox:hover),
+  :deep(.el-table .el-button:active),
+  .batch-btn:active,
+  .list-tab:active,
+  .pagination :deep(.el-pager li:active),
+  .pagination :deep(.el-pagination button:active) {
+    transform: none !important;
+  }
+
+  .batch-bar-enter-active,
+  .batch-bar-leave-active {
+    transition: none;
+  }
+}
+
+/* ── 性能：小屏关闭毛玻璃（backdrop-filter 在滚动/低端机上开销明显，视觉差异极小） ── */
+@media (max-width: 768px) {
+  .filter-card,
+  .batch-bar,
+  .btn-ghost.el-button,
+  :deep(.el-drawer) {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+</style>
+
+<style>
+/* ── 筛选下拉 / 日期面板的玻璃拟态：
+      由 popper-class 命名空间限定（teleport 到 body，scoped 样式命中不到），
+      只作用于本页这两个弹层，不影响其它页面的 EP 下拉 ── */
+.wt-select-glass.el-select__popper,
+.wt-date-glass.el-popper {
+  padding: 6px;
+  border: 1px solid rgba(227, 235, 247, 0.9);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 20px 44px -26px rgba(36, 50, 74, 0.5);
+  backdrop-filter: blur(18px) saturate(1.1);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+}
+
+.wt-select-glass .el-select-dropdown__item {
+  margin: 3px 6px;
+  border-radius: 9px;
+  transition:
+    background-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.wt-select-glass .el-select-dropdown__item.is-hovering {
+  background: rgba(57, 120, 246, 0.1);
+  color: var(--wt-primary);
+}
+
+.wt-select-glass .el-select-dropdown__item.is-selected {
+  color: var(--wt-primary);
+  font-weight: 700;
+}
+
+.wt-date-glass .el-picker-panel {
+  border: none;
+  background: transparent;
+  color: var(--wt-text);
 }
 </style>
