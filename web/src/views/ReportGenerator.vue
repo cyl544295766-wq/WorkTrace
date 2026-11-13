@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, CopyDocument, Delete, Download, View } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
-import { httpDelete, httpGet } from '@/api/request'
+import { httpDelete, httpGet, httpPut } from '@/api/request'
 
 /** 后端报告（Result.data / done 事件后组装） */
 interface BizReport {
@@ -230,6 +230,7 @@ async function generateReport(): Promise<void> {
     const decoder = new TextDecoder('utf-8')
     let buffer = '' // SSE 事件以空行(\n\n)分隔；最后一段可能不完整，留待下一轮
     let failed: string | null = null
+    let partialSaved = false // 流中断但后端已保全部分内容落库
 
     while (true) {
       const { done, value } = await reader.read()
@@ -244,7 +245,27 @@ async function generateReport(): Promise<void> {
         const { event, data } = parseSseEvent(raw)
 
         if (event === 'error') {
-          failed = (JSON.parse(data || '{}') as { message?: string }).message ?? '报告生成失败'
+          const payload = JSON.parse(data || '{}') as {
+            message?: string
+            reportId?: number
+            partial?: boolean
+          }
+          if (payload.partial && payload.reportId) {
+            // ★ 后端已把中断前的部分内容落库 → 按"部分成功"处理：保留已生成文本
+            partialSaved = true
+            failed = null
+            if (report.value) {
+              report.value = {
+                ...report.value,
+                id: payload.reportId,
+                aiModel: report.value.aiModel === '生成中…' ? 'AI' : report.value.aiModel,
+                content: content.value,
+              }
+            }
+            void loadHistory() // 部分内容记录入列
+          } else {
+            failed = payload.message ?? '报告生成失败'
+          }
         } else if (event === 'done') {
           const { reportId } = JSON.parse(data || '{}') as { reportId?: number }
           // 生成完毕：补全报告元信息（内容以用户可能手动编辑过的 content 为准）
@@ -266,7 +287,9 @@ async function generateReport(): Promise<void> {
       if (failed) break
     }
 
-    if (failed) {
+    if (partialSaved) {
+      ElMessage.warning('生成中断，已把部分内容保存到历史记录，可在编辑后「保存修改」')
+    } else if (failed) {
       ElMessage.error(failed)
     } else {
       ElMessage.success('AI 报告生成完毕，可直接编辑')
@@ -281,11 +304,27 @@ async function generateReport(): Promise<void> {
   }
 }
 
-/** 把编辑后的正文回写到报告对象（本地会话内保存） */
-function saveEdit(): void {
-  if (!report.value) return
-  report.value = { ...report.value, content: content.value }
-  ElMessage.success('修改已保存')
+/** 编辑保存：已落库的报告回写后端（PUT /reports/{id}）；未落库时仅保存本地会话 */
+const saving = ref(false)
+async function saveEdit(): Promise<void> {
+  if (!report.value || saving.value) return
+  if (!report.value.id) {
+    // 生成中 / 从未生成成功：后端还没有这条记录，先存本地
+    report.value = { ...report.value, content: content.value }
+    ElMessage.info('报告尚未保存到历史记录，生成完成后再保存修改')
+    return
+  }
+  saving.value = true
+  try {
+    await httpPut(`/reports/${report.value.id}`, { content: content.value })
+    report.value = { ...report.value, content: content.value }
+    ElMessage.success('修改已保存到历史记录')
+    void loadHistory() // 列表摘要同步刷新
+  } catch {
+    // request.ts 已统一弹出错误提示
+  } finally {
+    saving.value = false
+  }
 }
 
 /** 复制文本到剪贴板（结果卡与查看抽屉共用） */
@@ -398,7 +437,7 @@ function exportView(): void {
       />
 
       <div class="result-actions">
-        <el-button type="primary" :icon="Check" :disabled="generating" @click="saveEdit">
+        <el-button type="primary" :icon="Check" :disabled="generating" :loading="saving" @click="saveEdit">
           保存修改
         </el-button>
         <el-button :icon="CopyDocument" @click="copyMarkdown">复制 Markdown</el-button>

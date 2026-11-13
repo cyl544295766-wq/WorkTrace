@@ -14,6 +14,7 @@ import {
   List,
   MagicStick,
   Plus,
+  Refresh,
   Sunny,
   TrendCharts,
   VideoPlay,
@@ -598,6 +599,20 @@ async function loadInsight(): Promise<void> {
     // 业务失败后端已降级 RULES 恒 200；此处多为网络异常，保留本地兜底
   }
 }
+
+/** 「换一条」：refresh=true 绕过服务端 30min 缓存重新生成；失败静默保留当前文案 */
+const insightRefreshing = ref(false)
+async function refreshInsight(): Promise<void> {
+  if (insightRefreshing.value) return
+  insightRefreshing.value = true
+  try {
+    aiInsight.value = await httpGet<AiInsight>('/insights/work', { refresh: true })
+  } catch {
+    // request.ts 已统一弹出错误提示；面板保持原文案
+  } finally {
+    insightRefreshing.value = false
+  }
+}
 /** 展示优先级：AI 洞察 > 本地规则兜底 */
 const activeInsight = computed(() => aiInsight.value ?? fallbackInsight.value)
 
@@ -981,6 +996,16 @@ onBeforeUnmount(() => {
                     {{ activeInsight.source === 'AI' ? 'AI 实时分析' : '智能规则分析' }}
                   </span>
                 </div>
+                <!-- 换一条：绕过服务端 30min 缓存重新生成洞察（洞察卡最右侧轻玻璃小圆钮） -->
+                <button
+                  type="button"
+                  class="ai-refresh"
+                  :disabled="insightRefreshing"
+                  :aria-label="insightRefreshing ? '正在生成新的洞察…' : '换一条 AI 洞察'"
+                  @click="refreshInsight"
+                >
+                  <el-icon :size="13" :class="{ spinning: insightRefreshing }"><Refresh /></el-icon>
+                </button>
               </div>
 
               <!-- 第二部分：关键数据指标（全部由已加载任务派生，数字用主题色强调） -->
@@ -2349,6 +2374,55 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid rgba(137, 151, 172, 0.16);
 }
 
+/* 「换一条」：轻玻璃小圆钮，推到头部最右侧；加载时图标旋转（reduced-motion 全局关闭） */
+.ai-refresh {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  border: 1px solid rgba(137, 151, 172, 0.28);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.72);
+  color: #64748b;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 6px 12px -10px rgba(36, 50, 74, 0.35);
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease,
+    transform 0.18s ease;
+}
+
+.ai-refresh:hover:not(:disabled) {
+  color: #3978f6;
+  border-color: rgba(57, 120, 246, 0.4);
+  background: #fff;
+  transform: translateY(-1px);
+}
+
+.ai-refresh:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.ai-refresh:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ai-refresh .spinning {
+  animation: ai-refresh-spin 0.9s linear infinite;
+}
+
+@keyframes ai-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* 3D 发光晶体：多面渐变球体 + 高光 + 内圈；收敛外发光，避免过亮 */
 .ai-orb {
   position: relative;
@@ -3086,6 +3160,7 @@ onBeforeUnmount(() => {
   .empty-focus__orb,
   .ai-orb,
   .ai-panel__live i,
+  .ai-refresh .spinning,
   .tile__badge-orb {
     animation: none !important;
   }
@@ -3094,6 +3169,7 @@ onBeforeUnmount(() => {
   .kpi,
   .tile,
   .check,
+  .ai-refresh,
   .kpi__bar,
   .legend-track i {
     transition: none !important;
