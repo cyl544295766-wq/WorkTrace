@@ -1,4 +1,5 @@
 import { createApp } from 'vue'
+import './styles/tokens.css' // 设计规范 token（首页 / 任务管理页共用，先于组件样式加载）
 import App from './App.vue'
 import { createPinia } from 'pinia'
 import router from './router'

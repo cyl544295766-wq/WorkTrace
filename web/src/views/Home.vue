@@ -1068,44 +1068,19 @@ onBeforeUnmount(() => {
    ═══════════════════════════════════════════════════════════════ */
 
 .home-page {
-  --bg: #f2f5fb;
-  --text: #24324a;
-  --muted: #6b7a91; /* 次级文字：对比度提升一档，长文阅读更省力 */
-  --primary: #3978f6;
-  --cyan: #20c5c1;
-  --green: #25b978;
-  --orange: #ffa63d;
-  --violet: #7c6cf0;
-  --radius: 20px; /* 外层卡片统一圆角 */
-  --radius-md: 16px; /* 卡片内嵌面板 / 入口卡统一圆角 */
-  --btn-h: 42px; /* 主按钮统一高度 */
-  --gap: 18px; /* 模块栅格统一间距 */
-  /* 阴影规范：整体强度较上一版下调约 20%，并削弱卡片底部蓝色光晕 */
-  --shadow-card:
-    0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    inset 0 -1px 0 rgba(120, 168, 255, 0.08),
-    inset 0 -20px 34px -32px rgba(57, 120, 246, 0.14),
-    0 1px 2px rgba(36, 50, 74, 0.04),
-    0 10px 22px -16px rgba(36, 50, 74, 0.26),
-    0 26px 52px -36px rgba(57, 120, 246, 0.2);
-  --shadow-hover:
-    0 1px 0 rgba(255, 255, 255, 0.96) inset,
-    inset 0 -20px 34px -32px rgba(57, 120, 246, 0.16),
-    0 2px 4px rgba(36, 50, 74, 0.04),
-    0 16px 30px -18px rgba(36, 50, 74, 0.3),
-    0 34px 66px -40px rgba(57, 120, 246, 0.26);
-
+  /* 颜色 / 圆角 / 阴影等跨页面规范统一放在 src/styles/tokens.css（:root），
+     本页只保留页面私有属性，避免与任务管理页各写一份造成漂移 */
   position: relative;
   isolation: isolate;
   display: grid;
   grid-template-rows: auto auto auto auto; /* 行高由内容决定，图表行不再被底部行撑高 */
-  gap: var(--gap);
+  gap: var(--wt-gap);
   width: 100%;
   flex: 1 0 auto;
   margin: 0;
   padding: 20px 24px 28px;
   box-sizing: border-box;
-  color: var(--text);
+  color: var(--wt-text);
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
@@ -1114,7 +1089,7 @@ onBeforeUnmount(() => {
     radial-gradient(900px 560px at 96% 2%, rgba(32, 197, 193, 0.13), transparent 62%),
     radial-gradient(820px 460px at 46% 44%, rgba(120, 168, 255, 0.06), transparent 70%),
     radial-gradient(720px 520px at 48% 108%, rgba(124, 108, 240, 0.05), transparent 64%),
-    var(--bg);
+    var(--wt-bg);
 }
 
 .home-page > section {
@@ -1200,12 +1175,12 @@ onBeforeUnmount(() => {
 .card {
   --lift: 0px;
   position: relative;
-  border: 1px solid rgba(227, 235, 247, 0.9);
-  border-radius: var(--radius);
+  border: 1px solid var(--wt-card-border);
+  border-radius: var(--wt-radius);
   background:
     radial-gradient(520px 260px at 100% 0%, rgba(120, 168, 255, 0.07), transparent 70%),
     linear-gradient(145deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.68) 100%);
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--wt-shadow-card);
   backdrop-filter: blur(18px) saturate(1.08);
   -webkit-backdrop-filter: blur(18px) saturate(1.08);
   transform: translate3d(0, var(--lift), 0);
@@ -1217,7 +1192,7 @@ onBeforeUnmount(() => {
 
 .card:hover {
   border-color: rgba(255, 255, 255, 0.9);
-  box-shadow: var(--shadow-hover);
+  box-shadow: var(--wt-shadow-hover);
   will-change: transform;
 }
 
@@ -1240,7 +1215,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 9px;
   margin: 0;
-  color: var(--text);
+  color: var(--wt-text);
   font-size: 17px;
   font-weight: 750;
   letter-spacing: -0.015em;
@@ -1272,7 +1247,7 @@ onBeforeUnmount(() => {
 .card__more {
   padding: 4px 8px;
   border-radius: 999px;
-  color: var(--muted);
+  color: var(--wt-muted);
   font-size: 13px;
   text-decoration: none;
   transition:
@@ -1281,7 +1256,7 @@ onBeforeUnmount(() => {
 }
 
 .card__more:hover {
-  color: var(--primary);
+  color: var(--wt-primary);
   background: rgba(57, 120, 246, 0.07);
 }
 
@@ -1297,7 +1272,7 @@ onBeforeUnmount(() => {
   padding: 26px 30px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.9);
-  border-radius: var(--radius);
+  border-radius: var(--wt-radius);
   background:
     radial-gradient(620px 280px at 82% 18%, rgba(32, 197, 193, 0.1), transparent 62%),
     radial-gradient(720px 320px at 12% 0%, rgba(120, 168, 255, 0.18), transparent 64%),
@@ -1511,7 +1486,7 @@ onBeforeUnmount(() => {
 }
 
 .btn-grad.el-button {
-  height: var(--btn-h);
+  height: var(--wt-btn-h);
   padding: 0 20px;
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 13px;
@@ -1549,7 +1524,7 @@ onBeforeUnmount(() => {
 }
 
 .btn-ai.el-button {
-  height: var(--btn-h);
+  height: var(--wt-btn-h);
   padding: 0 20px;
   border: 1px solid rgba(255, 255, 255, 0.9);
   border-radius: 13px;
@@ -1586,7 +1561,7 @@ onBeforeUnmount(() => {
 .kpi-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--gap);
+  gap: var(--wt-gap);
 }
 
 .kpi {
@@ -1600,12 +1575,12 @@ onBeforeUnmount(() => {
   min-height: 126px;
   padding: 20px;
   overflow: hidden;
-  border: 1px solid rgba(227, 235, 247, 0.9);
-  border-radius: var(--radius);
+  border: 1px solid var(--wt-card-border);
+  border-radius: var(--wt-radius);
   background:
     radial-gradient(190px 130px at 100% 0%, var(--glow), transparent 72%),
     linear-gradient(150deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.66));
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--wt-shadow-card);
   backdrop-filter: blur(16px) saturate(1.08);
   -webkit-backdrop-filter: blur(16px) saturate(1.08);
   transform: perspective(1000px) translate3d(0, var(--lift), 0) rotateX(var(--rx))
@@ -1763,7 +1738,7 @@ onBeforeUnmount(() => {
 .charts-row {
   display: grid;
   grid-template-columns: 1.65fr 1fr;
-  gap: var(--gap);
+  gap: var(--wt-gap);
   min-height: 340px;
 }
 
@@ -1983,7 +1958,7 @@ onBeforeUnmount(() => {
 .bottom-row {
   display: grid;
   grid-template-columns: 1.65fr 1fr;
-  gap: var(--gap);
+  gap: var(--wt-gap);
   min-height: 320px;
 }
 
@@ -2337,7 +2312,7 @@ onBeforeUnmount(() => {
   padding: 20px;
   overflow: hidden;
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: var(--wt-radius-md);
   background:
     linear-gradient(150deg, rgba(240, 255, 254, 0.84), rgba(255, 255, 255, 0.58) 48%, rgba(237, 245, 255, 0.8))
       padding-box,
@@ -2637,8 +2612,8 @@ onBeforeUnmount(() => {
   min-height: 0;
   padding: 20px 14px 18px;
   overflow: hidden;
-  border: 1px solid rgba(227, 235, 247, 0.9);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--wt-card-border);
+  border-radius: var(--wt-radius-md);
   background:
     radial-gradient(170px 120px at 50% 0%, var(--glow), transparent 70%),
     linear-gradient(155deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.7));
