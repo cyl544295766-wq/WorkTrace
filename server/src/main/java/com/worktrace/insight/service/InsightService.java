@@ -31,14 +31,15 @@ import java.util.Map;
  * AI 工作洞察：基于当前用户的真实任务统计调用大模型生成简短洞察文案。
  *
  * <p><b>降级策略（关键）</b>：AI key 缺失 / 超时 / 响应不可解析时返回规则兜底文案（source=RULES），
- * 接口本身恒成功——前端保留本地规则文案作为网络层失败的兜底。
+ * 接口本身恒成功——前端保留本地规则文案作为网络层失败的兜底。瞬时失败自动重试 1 次（约 400ms 后）。
  *
  * <p>模型调用沿用 {@code ReportService} 的 Chat Completions 模式（RestTemplate + Bearer +
  * {@code chat/completions}），独立实现不与报告生成共用类，配置复用
  * {@code ai.base-url / ai.api-key / ai.model}，零新增配置。
  *
  * <p>缓存：Caffeine 按 userId 缓存 <b>AI</b> 结果 30 分钟（单机部署，参照 IdempotentAspect）；
- * RULES 结果不缓存，下次请求自动重试 AI。
+ * RULES 结果不缓存，下次请求自动重试 AI。首页「换一条」走 {@code refresh=true} 绕过缓存
+ * 重新生成（成功后回写缓存）。
  */
 @Service
 public class InsightService {
@@ -51,7 +52,8 @@ public class InsightService {
                     + "只输出一个 JSON 对象，不要输出任何其他文字或 Markdown 代码围栏，格式："
                     + "{\"headline\":\"不超过12字的短标题\",\"para\":\"不超过80字的分析\","
                     + "\"advice\":\"不超过18字的行动建议\"}。"
-                    + "语气专业、具体、不说空话，结合统计里的逾期、到期、优先级等实际情况。";
+                    + "语气专业、具体、不说空话，结合统计里的逾期、到期、优先级等实际情况；"
+                    + "统计里有近 7 天完成数与再前 7 天完成数的对比时，用一句话点出节奏变化（加快/放缓/持平）。";
 
     /** category 代码 → 中文（只影响 prompt 可读性） */
     private static final Map<String, String> CATEGORY_LABEL = Map.of(
@@ -92,12 +94,16 @@ public class InsightService {
     }
 
     /**
-     * 获取工作洞察：缓存命中直接返回；未命中统计任务 → 调 AI；失败降级规则文案。
+     * 获取工作洞察：缓存命中直接返回；未命中统计任务 → 调 AI（失败重试 1 次）；失败降级规则文案。
+     *
+     * @param refresh true = 跳过缓存读取重新生成（首页「换一条」），成功后回写缓存
      */
-    public InsightVO getWorkInsight(Long userId) {
-        InsightVO cached = cache.getIfPresent(userId);
-        if (cached != null) {
-            return cached;
+    public InsightVO getWorkInsight(Long userId, boolean refresh) {
+        if (!refresh) {
+            InsightVO cached = cache.getIfPresent(userId);
+            if (cached != null) {
+                return cached;
+            }
         }
 
         List<BizTask> tasks = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
@@ -107,14 +113,28 @@ public class InsightService {
             return rulesInsight(stats); // 空态引导，不调 AI
         }
 
-        try {
-            InsightVO vo = parseInsight(callChatModel(buildPrompt(stats)));
-            cache.put(userId, vo); // 只缓存 AI 结果；RULES 不缓存，下次进入自动重试
-            return vo;
-        } catch (Exception e) {
-            log.warn("AI 洞察生成失败，降级为规则文案: {}", e.getMessage());
-            return rulesInsight(stats);
+        // 瞬时失败（网络抖动/超时）自动重试 1 次；仍失败才降级规则文案
+        Exception lastError = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                InsightVO vo = parseInsight(callChatModel(buildPrompt(stats)));
+                cache.put(userId, vo); // 只缓存 AI 结果；RULES 不缓存，下次进入自动重试
+                return vo;
+            } catch (Exception e) {
+                lastError = e;
+                if (attempt == 1) {
+                    try {
+                        Thread.sleep(400);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
         }
+        log.warn("AI 洞察生成失败（含 1 次重试），降级为规则文案: {}",
+                lastError == null ? "unknown" : lastError.getMessage());
+        return rulesInsight(stats);
     }
 
     /* ==================== 统计聚合 ==================== */
@@ -132,6 +152,8 @@ public class InsightService {
         int highPending;    // 高优未完成
         int keyTasks;       // 重点标记（is_key=1）
         int doneLast7;      // 近 7 天完成
+        int donePrev7;      // 再前 7 天完成（对比节奏：与 doneLast7 构成环比）
+        int newLast7;       // 近 7 天新增（createTime 口径）
         double avgProgress; // 平均进度（0-100）
         Map<String, Integer> categories = new LinkedHashMap<>(); // 分类分布（按数量降序，≤6）
         List<String> pendingSamples = new ArrayList<>();          // 未完成任务标题样例（≤10）
@@ -141,6 +163,7 @@ public class InsightService {
             s.total = tasks.size();
             LocalDate today = LocalDate.now();
             LocalDateTime weekAgo = LocalDateTime.now().minusDays(7);
+            LocalDateTime twoWeeksAgo = LocalDateTime.now().minusDays(14);
             long progressSum = 0;
             Map<String, Integer> cats = new LinkedHashMap<>();
             for (BizTask t : tasks) {
@@ -150,12 +173,19 @@ public class InsightService {
                     if (t.getFinishTime() != null && t.getFinishTime().isAfter(weekAgo)) {
                         s.doneLast7++;
                     }
+                    if (t.getFinishTime() != null && t.getFinishTime().isAfter(twoWeeksAgo)
+                            && !t.getFinishTime().isAfter(weekAgo)) {
+                        s.donePrev7++;
+                    }
                 } else if (st == 1) {
                     s.doing++;
                 } else if (st == 3) {
                     s.delayed++;
                 } else {
                     s.todo++;
+                }
+                if (t.getCreateTime() != null && t.getCreateTime().isAfter(weekAgo)) {
+                    s.newLast7++;
                 }
 
                 boolean unfinished = st != 2;
@@ -208,6 +238,8 @@ public class InsightService {
                 .append("；未来 7 天到期 ").append(s.dueWeek).append('\n');
         sb.append("- 高优先级未完成 ").append(s.highPending)
                 .append("；近 7 天完成 ").append(s.doneLast7)
+                .append("（再前 7 天完成 ").append(s.donePrev7).append("）")
+                .append("；近 7 天新增 ").append(s.newLast7)
                 .append("；平均进度 ").append(s.avgProgress).append("%\n");
         sb.append("- 重点任务（用户手动标记）").append(s.keyTasks).append(" 条\n");
         if (!s.categories.isEmpty()) {
@@ -244,6 +276,8 @@ public class InsightService {
                 Map.of("role", "system", "content", SYSTEM_PROMPT),
                 Map.of("role", "user", "content", userPrompt)));
         requestBody.put("temperature", 0.6);
+        // 洞察是三段短文案（12+80+18 字），220 token 足够且硬性控成本
+        requestBody.put("max_tokens", 220);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);

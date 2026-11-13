@@ -7,6 +7,7 @@ import com.worktrace.insight.service.InsightService;
 import jakarta.servlet.http.HttpSession;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -34,13 +35,18 @@ public class InsightController {
         return (LoginUser) session.getAttribute(LoginUser.SESSION_KEY);
     }
 
-    /** GET /api/insights/work 工作洞察 */
+    /**
+     * GET /api/insights/work 工作洞察
+     *
+     * @param refresh true = 跳过 30min 缓存重新生成（首页「换一条」入口），成功后回写缓存
+     */
     @GetMapping("/work")
-    public Result<InsightVO> work(HttpSession session) {
+    public Result<InsightVO> work(@RequestParam(defaultValue = "false") boolean refresh,
+                                  HttpSession session) {
         LoginUser user = currentUser(session);
         if (user == null) {
             return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
         }
-        return Result.ok(insightService.getWorkInsight(user.getId()));
+        return Result.ok(insightService.getWorkInsight(user.getId(), refresh));
     }
 }

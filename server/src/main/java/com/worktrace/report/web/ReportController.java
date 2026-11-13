@@ -3,7 +3,10 @@ package com.worktrace.report.web;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.worktrace.auth.dto.LoginUser;
 import com.worktrace.common.api.Result;
+import com.worktrace.common.exception.BizException;
+import com.worktrace.common.idempotent.Idempotent;
 import com.worktrace.report.dto.GenerateReportReq;
+import com.worktrace.report.dto.ReportContentReq;
 import com.worktrace.report.dto.ReportItemVO;
 import com.worktrace.report.entity.BizReport;
 import com.worktrace.report.service.ReportService;
@@ -13,6 +16,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -28,6 +32,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * <ul>
  *   <li>POST /api/reports/generate —— 生成报告（body: 报告类型 + 起止日期），同步返回</li>
  *   <li>POST /api/reports/stream-generate —— SSE 流式生成（同参数），增量推送 Markdown</li>
+ *   <li>PUT /api/reports/{id} —— 编辑保存报告正文（仅本人）</li>
  * </ul>
  */
 @RestController
@@ -47,6 +52,7 @@ public class ReportController {
 
     /** POST /api/reports/generate —— 同步生成并保存 AI 报告（保留兼容；流式见 stream-generate） */
     @PostMapping("/generate")
+    @Idempotent(key = "report-generate", expireSeconds = 20) // 同步调用耗时长，锁覆盖整个生成过程防连点
     public Result<BizReport> generate(@Valid @RequestBody GenerateReportReq req, HttpSession session) {
         LoginUser user = currentUser(session);
         if (user == null) {
@@ -57,6 +63,9 @@ public class ReportController {
         }
         try {
             return Result.ok(reportService.generateAndSaveReport(user.getId(), req));
+        } catch (BizException e) {
+            // 生成冷却等业务异常：原样透传（GlobalExceptionHandler 对返回值路径不生效）
+            return Result.fail(e.getCode(), e.getMessage());
         } catch (Exception e) {
             // 大模型调用失败 / 配置缺失 / 响应不可解析，统一包成业务错误返回
             return Result.fail(Result.SERVER_ERROR, "报告生成失败: " + e.getMessage());
@@ -79,8 +88,30 @@ public class ReportController {
             ReportService.sendErrorEvent(emitter, "结束日期不能早于开始日期");
             return emitter;
         }
-        reportService.streamGenerateReport(user.getId(), req, emitter);
+        try {
+            // 生成冷却（30s）在 service 同步段抛出：必须转成 SSE error 事件，
+            // 不能落全局异常处理器（它对 SSE 请求会返回 JSON body，前端 fetch 会解析失败）
+            reportService.streamGenerateReport(user.getId(), req, emitter);
+        } catch (BizException e) {
+            ReportService.sendErrorEvent(emitter, e.getMessage());
+        }
         return emitter;
+    }
+
+    /** PUT /api/reports/{id} —— 编辑保存报告正文（仅本人；归属/类型/日期不可改） */
+    @PutMapping("/{id}")
+    public Result<BizReport> updateContent(@PathVariable Long id,
+                                           @Valid @RequestBody ReportContentReq req,
+                                           HttpSession session) {
+        LoginUser user = currentUser(session);
+        if (user == null) {
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
+        }
+        BizReport report = reportService.updateContent(user.getId(), id, req.content().strip());
+        if (report == null) {
+            return Result.fail(Result.NOT_FOUND, "报告不存在或无权操作");
+        }
+        return Result.ok(report);
     }
 
     /** GET /api/reports/page —— 当前用户的历史报告记录（分页，按创建时间倒序） */
