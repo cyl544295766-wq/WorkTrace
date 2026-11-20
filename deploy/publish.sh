@@ -38,6 +38,8 @@ export JAVA_HOME
 REMOTE_DIR=/home/ubuntu/worktrace
 SERVICE=worktrace
 HEALTH_URL=http://127.0.0.1:8083/actuator/health
+# npm 可执行（cygwin 运行时下 npm 的 sh 包装不可执行，可 export NPM=npm.cmd）
+NPM="${NPM:-npm}"
 
 BUILD_ONLY=0
 if [ "${1:-}" = "--build-only" ]; then
@@ -61,9 +63,9 @@ JAR="$(ls "$ROOT_DIR"/server/target/*.jar | head -1)"
 LOCAL_MD5="$(md5sum "$JAR" | cut -d' ' -f1)"
 echo "后端：$JAR（$(du -h "$JAR" | cut -f1)，md5 $LOCAL_MD5）"
 
-command -v npm > /dev/null 2>&1 || die "npm 不在 PATH（前端构建需要 Node.js）"
+command -v "$NPM" > /dev/null 2>&1 || die "npm 不在 PATH（前端构建需要 Node.js）"
 cd "$ROOT_DIR/web"
-npm run build
+"$NPM" run build
 [ -f dist/index.html ] || die "前端构建产物 dist/index.html 缺失"
 echo "前端：web/dist（$(du -sh dist | cut -f1)）"
 
@@ -74,6 +76,8 @@ fi
 
 # ---- 部署连接参数（仅部署阶段需要） ----
 [ -f "$SSH_KEY" ] || die "部署私钥不存在：$SSH_KEY"
+# 本地临时目录（cygwin/无 /tmp 的运行时可用 WT_TMP_LOCAL 覆盖，如 /cygdrive/c/Users/<u>/AppData/Local/Temp）
+TMP_LOCAL="${WT_TMP_LOCAL:-/tmp}"
 SSH_CMD=(ssh -i "$SSH_KEY" -p "$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST")
 SCP_CMD=(scp -i "$SSH_KEY" -P "$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new)
 
@@ -100,14 +104,14 @@ echo "服务器: $REMOTE_MD5"
 
 # ---- 5. 发布前端静态站（tar + 服务器端 rsync --delete，nginx :8081 服务） ----
 log "5/6 发布前端静态站点"
-tar czf /tmp/worktrace-web.tar.gz -C "$ROOT_DIR/web/dist" .
-"${SCP_CMD[@]}" /tmp/worktrace-web.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
+tar czf "$TMP_LOCAL/worktrace-web.tar.gz" -C "$ROOT_DIR/web/dist" .
+"${SCP_CMD[@]}" "$TMP_LOCAL/worktrace-web.tar.gz" "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
 "${SSH_CMD[@]}" 'set -e
   rm -rf /tmp/wt-web-new && mkdir -p /tmp/wt-web-new
   tar xzf /tmp/worktrace-web.tar.gz -C /tmp/wt-web-new
   sudo mkdir -p /var/www/worktrace && sudo chown ubuntu:ubuntu /var/www/worktrace
   rsync -a --delete /tmp/wt-web-new/ /var/www/worktrace/'
-rm -f /tmp/worktrace-web.tar.gz
+rm -f "$TMP_LOCAL/worktrace-web.tar.gz"
 
 # ---- 6. 重启 + 健康检查（失败自动回滚） ----
 log "6/6 重启服务 + 健康检查"
