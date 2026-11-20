@@ -216,7 +216,7 @@ public class ReportService {
                 .orderByAsc(BizTask::getPlanDate));
 
         // ② 任务列表 → 结构化 Prompt 上下文
-        String prompt = buildPrompt(req.reportType(), req.startDate(), req.endDate(), tasks);
+        String prompt = buildPrompt(userId, req.reportType(), req.startDate(), req.endDate(), tasks);
 
         // ③ 调用大模型（输出上限按报告类型）
         String markdown = callChatModel(prompt, outputBudget(req.reportType()));
@@ -296,8 +296,11 @@ public class ReportService {
      *       （≤{@value LOGS_PER_TASK} 条/任务，总行数按报告类型预算）；</li>
      *   <li><b>逐字段截断</b>：标题 40 / 详情 60 / 跟进 40 字符。</li>
      * </ul>
+     *
+     * <p>数据归属：范围内任务来自主查询（已按 userId 过滤）；缺失祖先补拉与跟进记录查询
+     * 同样必须带 userId —— parentId 一旦指向他人任务 id，不允许把别人的任务/跟进带进报告。
      */
-    private String buildPrompt(String reportType, LocalDate startDate, LocalDate endDate, List<BizTask> tasks) {
+    private String buildPrompt(Long userId, String reportType, LocalDate startDate, LocalDate endDate, List<BizTask> tasks) {
         String typeCn = switch (reportType) {
             case "DAILY" -> "日报";
             case "WEEKLY" -> "周报";
@@ -337,7 +340,11 @@ public class ReportService {
             if (missing.isEmpty()) {
                 break;
             }
-            List<BizTask> ancestors = bizTaskMapper.selectBatchIds(missing);
+            // 归属限制：补拉祖先必须限定当前 userId（禁止只按 id 查）——
+            // parentId 指向他人任务 id 时查不到 → 落为孤儿根（"父任务不在本范围"），别人的任务不进报告
+            List<BizTask> ancestors = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
+                    .in(BizTask::getId, missing)
+                    .eq(BizTask::getUserId, userId));
             if (ancestors == null || ancestors.isEmpty()) {
                 break;
             }
@@ -367,7 +374,7 @@ public class ReportService {
 
         // ③ 跟进记录：范围内任务在报告周期内的记录（一次查询，按任务分组）
         List<Long> taskIds = nodes.stream().map(BizTask::getId).toList();
-        Map<Long, List<BizTaskLog>> logsByTask = fetchLogsGroupedByTask(taskIds, startDate, endDate);
+        Map<Long, List<BizTaskLog>> logsByTask = fetchLogsGroupedByTask(userId, taskIds, startDate, endDate);
 
         // ④ 树状输出：未完成任务优先保展开；已完成任务受预算控制；跟进记录受总预算控制
         int[] seq = {0};                 // 顶层序号
@@ -414,12 +421,16 @@ public class ReportService {
         return tasks.stream().filter(t -> (t.getStatus() == null ? 0 : t.getStatus()) == status).count();
     }
 
-    /** 报告周期内、属于范围内任务的跟进记录（一次查询 LIMIT 200 兜底，按 taskId 分组） */
-    private Map<Long, List<BizTaskLog>> fetchLogsGroupedByTask(List<Long> taskIds, LocalDate start, LocalDate end) {
+    /**
+     * 报告周期内、属于范围内任务的跟进记录（一次查询 LIMIT 200 兜底，按 taskId 分组）。
+     * 归属限制：taskId 来自当前用户任务 + 补拉祖先，查询仍必须带 userId（纵深防御，防跨用户混入）。
+     */
+    private Map<Long, List<BizTaskLog>> fetchLogsGroupedByTask(Long userId, List<Long> taskIds, LocalDate start, LocalDate end) {
         if (taskIds.isEmpty()) {
             return Map.of();
         }
         List<BizTaskLog> logs = bizTaskLogMapper.selectList(Wrappers.<BizTaskLog>lambdaQuery()
+                .eq(BizTaskLog::getUserId, userId)
                 .in(BizTaskLog::getTaskId, taskIds)
                 .ge(BizTaskLog::getCreateTime, start.atStartOfDay())
                 .lt(BizTaskLog::getCreateTime, end.plusDays(1).atStartOfDay())
@@ -652,7 +663,7 @@ public class ReportService {
                 .orderByAsc(BizTask::getPlanDate));
 
         // ② 任务列表 → 结构化 Prompt 上下文
-        String prompt = buildPrompt(req.reportType(), req.startDate(), req.endDate(), tasks);
+        String prompt = buildPrompt(userId, req.reportType(), req.startDate(), req.endDate(), tasks);
 
         // ③ 落库对象先备好，流结束后补 content 再 insert
         BizReport report = new BizReport();
