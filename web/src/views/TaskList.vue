@@ -19,6 +19,7 @@ import {
   VideoPlay,
 } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
+import { fetchAllTaskRows } from '@/api/tasks'
 import { httpDelete, httpGet, httpPost, httpPut } from '@/api/request'
 
 type TaskStatus = 'todo' | 'doing' | 'done' | 'delayed'
@@ -261,11 +262,9 @@ const loadFailed = ref(false)
 async function loadTasks(): Promise<void> {
   loading.value = true
   try {
-    const page = await httpGet<{ records: ApiTask[]; total: number }>('/tasks/page', {
-      page: 1,
-      size: 500, // 个人任务量级：一次拉全，前端组树/筛选/级联都在内存做
-    })
-    tasks.value = buildTree((page.records ?? []).map(fromApi))
+    // 分页循环拉全量（>500 条自动翻页合并，按 id 去重），前端组树/筛选/级联都在内存做
+    const rows = await fetchAllTaskRows()
+    tasks.value = buildTree(rows.map(fromApi))
     expandedIds.value = new Set() // 新数据默认全部收起
     loadFailed.value = false
   } catch (e) {

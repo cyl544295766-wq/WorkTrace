@@ -19,6 +19,7 @@ import {
   TrendCharts,
   VideoPlay,
 } from '@element-plus/icons-vue'
+import { fetchAllTaskRows } from '@/api/tasks'
 import { httpGet, httpPut } from '@/api/request'
 
 // ── 按需注册：折线 + 环形（饼） + 常用组件 + Canvas 渲染器 ──
@@ -61,8 +62,8 @@ const loading = ref(true)
 async function loadTasks(): Promise<void> {
   loading.value = true
   try {
-    const page = await httpGet<{ records: HomeTask[] }>('/tasks/page', { page: 1, size: 500 })
-    tasks.value = page.records ?? []
+    // 分页循环拉全量（>500 条自动翻页合并，按 id 去重），统计与重点任务卡口径更完整
+    tasks.value = await fetchAllTaskRows()
   } catch {
     tasks.value = [] // 错误提示由 request.ts 统一处理
   } finally {

@@ -173,10 +173,18 @@ public class TaskService {
         return bizTaskMapper.selectOne(wrapsOwned(userId).eq(BizTask::getId, req.id()));
     }
 
-    /** 分页查询（仅本人 + 状态/日期范围筛选） */
+    /** 分页参数上限：页大小 500（与前端拉全量循环口径一致），页码 1-1000（防超大 OFFSET 扫描） */
+    private static final int MAX_PAGE_SIZE = 500;
+    private static final int MAX_PAGE_NUMBER = 1000;
+
+    /**
+     * 分页查询（仅本人 + 状态/日期范围筛选）。
+     * 非法页码/页大小一律钳制处理（不报错）：page 钳到 1-1000，size 钳到 1-500（≤0 回退默认 10），
+     * 非数字参数由 Spring 类型转换统一 400。
+     */
     public Page<BizTask> page(Long userId, TaskPageReq req) {
-        int current = Math.max(req.page(), 1);
-        int size = req.size() <= 0 ? 10 : req.size();
+        int current = Math.min(Math.max(req.page(), 1), MAX_PAGE_NUMBER);
+        int size = req.size() <= 0 ? 10 : Math.min(req.size(), MAX_PAGE_SIZE);
         Page<BizTask> page = new Page<>(current, size);
 
         LambdaQueryWrapper<BizTask> wrapper = wrapsOwned(userId)
