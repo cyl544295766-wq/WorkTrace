@@ -1,15 +1,19 @@
 -- ============================================================
 -- 01a_spring_session.sql  Spring Session JDBC 官方表结构（MySQL 版）
 -- ============================================================
--- spring-session-jdbc 在 MySQL 上不会自动建表（initialize-schema 默认仅对
--- 内嵌库生效），必须在初始化阶段手工创建，否则 Session 落库报错。
+-- ★ 本文件是 SPRING_SESSION 两张表的【唯一 DDL 来源】：应用配置
+--   spring.session.jdbc.initialize-schema=never，启动期不执行任何建表 DDL；
+--   全新环境由 Docker 首次初始化（docker-compose.yml 挂载本文件）或按
+--   server/db/README.md 的顺序手工执行本文件。脚本幂等（IF NOT EXISTS），
+--   在已有表/已有会话数据上重跑安全（不删表、不重建、不触碰数据行）。
+--   未来表结构演进：新增编号分片（如 14_xxx.sql），存量环境按 db/README 升级约定执行。
 -- 08_sys_seed.sql 中的 GRANT ... ON work_system.SPRING_SESSION 前置依赖本文件。
 -- 来源：spring-session-jdbc 3.x org/springframework/session/jdbc/schema-mysql.sql
 -- ============================================================
 
 USE work_system;
 
-CREATE TABLE SPRING_SESSION (
+CREATE TABLE IF NOT EXISTS SPRING_SESSION (
     PRIMARY_ID           CHAR(36)     NOT NULL,
     SESSION_ID           CHAR(36)     NOT NULL,
     CREATION_TIME        BIGINT       NOT NULL,
@@ -24,7 +28,7 @@ CREATE TABLE SPRING_SESSION (
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC
   COMMENT='Spring Session 会话主表';
 
-CREATE TABLE SPRING_SESSION_ATTRIBUTES (
+CREATE TABLE IF NOT EXISTS SPRING_SESSION_ATTRIBUTES (
     SESSION_PRIMARY_ID CHAR(36)      NOT NULL,
     ATTRIBUTE_NAME     VARCHAR(200)  NOT NULL,
     ATTRIBUTE_BYTES    BLOB          NOT NULL,

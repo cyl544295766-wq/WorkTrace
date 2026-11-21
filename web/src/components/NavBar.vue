@@ -1,14 +1,28 @@
 <script setup lang="ts">
 import { RouterLink, useRouter } from 'vue-router'
 import { SwitchButton, User } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { httpPost, ApiError } from '@/api/request'
 import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
 const userStore = useUserStore()
 
-function logout(): void {
-  userStore.clear()
-  router.push('/login')
+/**
+ * 退出登录：先调服务端接口使 Spring Session 失效，无论成败都清本地态并回登录页。
+ * 失败时明确提示「服务端会话可能未注销」（网络异常/服务端错误等；401 = 会话本已失效，无需提示）。
+ */
+async function logout(): Promise<void> {
+  try {
+    await httpPost('/auth/logout')
+  } catch (e) {
+    if (!(e instanceof ApiError && e.code === 401)) {
+      ElMessage.warning('服务端会话可能未注销，请重新登录')
+    }
+  } finally {
+    userStore.clear()
+    router.push('/login')
+  }
 }
 </script>
 

@@ -3,14 +3,10 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
 
-server:
-  servlet:
-    session:
-      cookie:
-        # ★ 内网 HTTP 阶段必须为 false。浏览器在 HTTP 下会丢弃 Secure Cookie，
-        #   表现为"登录成功后立刻掉线"且无任何报错。升公网时按 design.md §1.4
-        #   一次性完成：域名+证书 / secure=true / 打开 HSTS。
-        secure: false
+# ⚠️ 原 server.servlet.session.cookie.* 在 Spring Session 接管后不生效（原生容器会话被绕过），
+#   已删除。会话 Cookie 属性（secure=false/httpOnly=true/SameSite=Lax/Path=/）与会话有效期 7 天
+#   统一在 com.worktrace.common.config.SessionCookieConfig 显式定义；升 HTTPS 时按 design.md §1.4
+#   一次性改为 secure=true 并打开 HSTS。
 
 logging:
   level:

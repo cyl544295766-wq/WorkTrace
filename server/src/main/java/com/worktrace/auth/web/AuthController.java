@@ -7,6 +7,7 @@ import com.worktrace.auth.dto.RegisterReq;
 import com.worktrace.auth.entity.SysUser;
 import com.worktrace.auth.mapper.SysUserMapper;
 import com.worktrace.common.api.Result;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 import org.springframework.dao.DuplicateKeyException;
@@ -38,14 +39,17 @@ public class AuthController {
         this.sysUserMapper = sysUserMapper;
     }
 
-    /** POST /api/auth/login：校验用户名密码，成功后将用户信息存入 HttpSession */
+    /**
+     * POST /api/auth/login：校验用户名密码，成功后轮换 Session ID 并写入登录态。
+     * 认证失败不创建/不改写任何会话（无登录态写入）。
+     */
     @PostMapping("/login")
-    public Result<LoginUser> login(@Valid @RequestBody LoginRequest req, HttpSession session) {
+    public Result<LoginUser> login(@Valid @RequestBody LoginRequest req, HttpServletRequest request) {
         SysUser user = sysUserMapper.selectOne(
                 Wrappers.<SysUser>lambdaQuery().eq(SysUser::getUsername, req.username()));
 
         if (user == null || !matches(req.password(), user.getPassword())) {
-            return Result.fail(Result.UNAUTHORIZED, "用户名或密码错误");
+            return Result.fail(Result.UNAUTHORIZED, "用户名或密码错误"); // 失败不写登录态、不动会话
         }
         // 历史明文密码：登录成功后就地升级为 BCrypt（消除明文存储；比对兼容分支保留）
         if (!isBcrypt(user.getPassword())) {
@@ -56,7 +60,7 @@ public class AuthController {
         }
 
         LoginUser loginUser = new LoginUser(user.getId(), user.getUsername(), user.getNickname());
-        session.setAttribute(LoginUser.SESSION_KEY, loginUser);
+        writeLoginUser(request, loginUser);
         return Result.ok(loginUser);
     }
 
@@ -65,9 +69,10 @@ public class AuthController {
      *
      * <p>密码一律 BCrypt 哈希落库；用户名唯一键 {@code uk_sys_user_username} 兜底并发注册。
      * 数据隔离不依赖本接口：sys_user 之外的业务数据全部按会话 userId 过滤，新用户天然只见自己的数据。
+     * 注册失败不创建/不改写任何会话；成功路径与 login 相同：先轮换 Session ID 再写入登录态。
      */
     @PostMapping("/register")
-    public Result<LoginUser> register(@Valid @RequestBody RegisterReq req, HttpSession session) {
+    public Result<LoginUser> register(@Valid @RequestBody RegisterReq req, HttpServletRequest request) {
         String username = req.username();
         if (sysUserMapper.selectOne(
                 Wrappers.<SysUser>lambdaQuery().eq(SysUser::getUsername, username)) != null) {
@@ -88,9 +93,9 @@ public class AuthController {
             return Result.fail(Result.BAD_REQUEST, "用户名已存在");
         }
 
-        // 注册即登录：与 login 成功分支同款会话写入
+        // 注册即登录：与 login 成功分支同款轮换+写入
         LoginUser loginUser = new LoginUser(user.getId(), user.getUsername(), user.getNickname());
-        session.setAttribute(LoginUser.SESSION_KEY, loginUser);
+        writeLoginUser(request, loginUser);
         return Result.ok(loginUser);
     }
 
@@ -98,6 +103,36 @@ public class AuthController {
     @GetMapping("/info")
     public Result<LoginUser> info(HttpSession session) {
         return Result.ok((LoginUser) session.getAttribute(LoginUser.SESSION_KEY));
+    }
+
+    /**
+     * 会话固定（Session Fixation）防护：把登录态写入<b>新建</b>会话而非沿用请求带来的旧会话。
+     *
+     * <p>流程：先失效请求携带的旧会话（Spring Session JDBC 立即删 SPRING_SESSION 行，
+     * 攻击者预先布置/已知的旧 Session Cookie 随之失效），再创建全新会话写入登录用户信息；
+     * 响应由 CookieHttpSessionIdResolver 下发新 SESSION Cookie。会话 ID 在认证成功前后
+     * 必然变化，固定在旧 ID 上的登录态无从谈起。失败路径不经此方法，不产生任何会话写入。
+     */
+    private void writeLoginUser(HttpServletRequest request, LoginUser loginUser) {
+        HttpSession old = request.getSession(false);
+        if (old != null) {
+            old.invalidate();
+        }
+        request.getSession(true).setAttribute(LoginUser.SESSION_KEY, loginUser);
+    }
+
+    /**
+     * POST /api/auth/logout：退出登录——使当前 Spring Session 立即失效。
+     *
+     * <p>Spring Session JDBC 下 {@code invalidate()} 会删除 SPRING_SESSION 表中该会话的行，
+     * 旧 Session Cookie 复访受保护接口立即 401；SessionRepositoryFilter 还会随响应下发
+     * Max-Age=0 的空同名 Cookie 清除浏览器侧会话（expireSession）。只失效当前会话，
+     * 其他用户的会话互不影响。拦截器已保证到达这里的请求必带有效会话。
+     */
+    @PostMapping("/logout")
+    public Result<Void> logout(HttpSession session) {
+        session.invalidate();
+        return Result.ok();
     }
 
     private boolean matches(String raw, String stored) {

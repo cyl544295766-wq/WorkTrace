@@ -18,10 +18,11 @@ spring:
     store-type: jdbc
     jdbc:
       platform: mysql
-      # 自动初始化 session schema。用幂等脚本（IF NOT EXISTS），重启安全；
-      # 若改用外置 DDL 管理，则置 never 并保留 db/01_user_session.sql 的建表段。
-      initialize-schema: always
-      schema: classpath:session-schema-mysql.sql
+      # ⚠️ 表结构唯一来源：server/db/01a_spring_session.sql（Docker 首次初始化自动执行；
+      #    手动/存量环境按 server/db/README.md 的顺序执行）。应用启动不执行任何建表 DDL
+      #    （initialize-schema=never：生产启动期 DDL 被禁止；脚本演进 = db/ 新增编号分片，
+      #    存量环境按 server/db/README.md 的升级约定手工执行）。
+      initialize-schema: never
   mvc:
     # 未知路由交给 GlobalExceptionHandler 统一返回 404 响应体
     throw-exception-if-no-handler-found: true
@@ -46,16 +47,9 @@ server:
     include-message: never
     include-stacktrace: never
     include-binding-errors: never
-  servlet:
-    session:
-      timeout: 7d
-      cookie:
-        name: SESSION
-        http-only: true
-        same-site: lax
-        # 内网 HTTP 阶段必须 false；升 HTTPS 时连同 HSTS 一起改（design.md §1.4）
-        secure: false
-        path: /
+  # ⚠️ 不要在此配置 session/cookie：Spring Session 接管后 server.servlet.session.* 是死配置
+  #   （原生容器会话被绕过，SESSION Cookie 属性与会话超时都不读这里）。
+  #   唯一生效点：com.worktrace.common.config.SessionCookieConfig（Cookie 属性 + 7 天有效期）。
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
