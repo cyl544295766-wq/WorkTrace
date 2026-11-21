@@ -129,7 +129,7 @@ docker compose restart mysql
 | 顺序 | 来源 | 作用 |
 |---|---|---|
 | `00_load_tz.sh` | `docker/mysql-init/` | 加载 MySQL 时区表（JDBC 使用 `Asia/Shanghai` 必需） |
-| `01`–`13` | `server/db/` | DDL 分片：`01–08` 设计稿建表、`10` 演示账号、`11` 业务表（`biz_task` 含 `is_key`/`finish_time`/`progress`、`biz_task_log`）、`12` 裁剪未实现表、`13` 幂等补 `is_key` |
+| `01`–`12` | `server/db/` | DDL 分片：`01–08` 设计稿建表（含 `01a` Spring Session 两张表——**唯一 DDL 来源**）、`10` 演示账号、`11` 业务表（`biz_task` 含 `is_key`/`finish_time`/`progress`、`biz_task_log`）、`12` 裁剪未实现表。`13` 面向存量库（幂等补 `is_key`），**不在容器初始化序列** |
 | `09_docker_app_user.sql` | `docker/mysql-init/` | 把 `wt_app` 账号主机改为 `%`，适配宿主机经端口映射连接 |
 
 > 本环境若无法访问 Docker Hub，可先从镜像站拉取再打标签：
@@ -254,7 +254,8 @@ npm run preview
 | `server.address` | `127.0.0.1` | 单机部署，由反向代理暴露 |
 | `server.port` | `8080`（dev 默认） | 服务器经 `worktrace.env` 覆盖为 `SERVER_PORT=8083` + `SERVER_ADDRESS=0.0.0.0`（Monevo 内网直连用），公网入口仍是 nginx :8081 |
 | `spring.profiles.default` | `dev` | |
-| `spring.servlet.session.timeout` | `7d` | Session 落库 |
+| `spring.session.jdbc.initialize-schema` | `never` | 会话表 DDL 唯一来源 = `server/db/01a_spring_session.sql`（应用启动不执行建表 DDL；全新环境走 Docker 初始化或手动分片，见 `server/db/README.md`） |
+| 会话 Cookie / 有效期 | `SESSION`，7 天 | 由 `SessionCookieConfig` 显式固定：HttpOnly、SameSite=Lax、Secure=false（纯 HTTP 部署）、Path=/、无 Domain |
 | `VITE_API_BASE` | `/api` | 前端请求前缀 |
 | `AI_API_KEY`（`ai.api-key`） | 空 | DeepSeek / OpenAI key，AI 报告与 AI 洞察共用；不配则报告报错、洞察降级为规则文案 |
 | `ai.base-url` | `https://api.deepseek.com/v1` | OpenAI 兼容 Chat Completions 地址 |
@@ -282,7 +283,7 @@ npm run preview
 
 1. `Dashboard.vue`（工作统计大屏，ECharts）已实现但尚未挂路由，导航暂无入口。
 2. `@Idempotent` 注解与切面已就绪，业务接口暂未挂载（当前提交场景手工防重足够，需要时在 Controller 方法上加注解即可）。
-3. 「退出登录」只清前端登录态，服务端会话按 Cookie 7 天自然过期，无主动失效接口。
+3. ~~「退出登录」只清前端登录态~~ → 已有服务端登出：`POST /api/auth/logout` 使会话失效并清 Cookie；登录/注册成功会轮换 Session ID（会话固定防护）；会话 7 天过期。
 4. 数据库从设计稿 19 张裁剪至 6 张（`12_drop_unused.sql`，线上已于 2026-11-05 同步删除）；被裁表的 DDL 仍保留在 `02–08` 分片中，未来实现某功能时把该表从 `12` 的 `DROP` 列表移除即可。
 5. `biz_task_log` 与 `biz_task` 的 `parent_id` / `category` / `finish_time` / `progress` / `is_key` 为后加能力：全新库由 `11_biz_tables.sql` 直接建全，**存量库需执行该文件头部注释中的 `ALTER`**；`is_key` 另有幂等脚本 `13_task_is_key.sql` 可直接跑。
 6. Element Plus 全量注册，主包 `index` 约 1.2MB（gzip 约 390KB，含 EP 全量组件与样式），构建有「>500KB」体积提示但成功；在意体积可改按需引入或 `manualChunks` 分包。

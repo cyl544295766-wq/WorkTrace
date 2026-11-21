@@ -4,8 +4,12 @@
 （演示账号、业务表、裁剪未用表、幂等补列），按序号顺序在 **MySQL 8.0.20+** 实例上执行。
 分片只负责建库建表、系统 seed 与最小权限；业务数据由应用产生。
 
-> **Docker 部署**：仓库根目录的 `docker-compose.yml` 会把本目录 `01`–`13` 自动挂载到
-> `/docker-entrypoint-initdb.d`，首次 `docker compose up -d` 时按序执行，无需手动运行。
+> **Spring Session 表结构**：`01a_spring_session.sql` 是 `SPRING_SESSION` 两张表的**唯一 DDL 来源**。
+> 应用配置 `spring.session.jdbc.initialize-schema=never`——启动期不执行任何建表 DDL（生产与本地一致）；
+> 全新环境由本目录分片初始化，存量环境升级时新增编号分片（如 `14_xxx.sql`）并按下方「存量库升级」执行。
+
+> **Docker 部署**：仓库根目录的 `docker-compose.yml` 会把本目录 `01`–`12` 自动挂载到
+> `/docker-entrypoint-initdb.d`（`13` 面向存量库、不进容器初始化序列），首次 `docker compose up -d` 时按序执行，无需手动运行。
 > 另有两个容器专用脚本（不属于本目录分片）：`docker/mysql-init/00_load_tz.sh`（加载时区表）
 > 与 `09_docker_app_user.sql`（把 `wt_app` 主机从 `127.0.0.1` 改为 `%`，适配端口映射访问）。
 > 本机直接执行时不需要这两个脚本。
@@ -19,7 +23,7 @@
 | 顺序 | 文件 | 内容 |
 |---|---|---|
 | 01 | `01_user_session.sql` | `CREATE DATABASE` |
-| 01a | `01a_spring_session.sql` | Spring Session 两张官方表（08 的授权前置依赖它） |
+| 01a | `01a_spring_session.sql` | Spring Session 两张官方表——**唯一 DDL 来源**（幂等可重跑；应用启动不执行 DDL；08 的授权前置依赖它） |
 | 02 | `02_task.sql` | `task`、`tag`、`task_tag` |
 | 03 | `03_note_time.sql` | `note`、`note_task_rel`、`time_entry` |
 | 04 | `04_stat.sql` | `daily_stat`、`weekly_stat`（双指标可空） |
