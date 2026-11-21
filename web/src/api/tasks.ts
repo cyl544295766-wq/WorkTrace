@@ -1,4 +1,4 @@
-import { httpGet } from './request'
+import { httpGet, ApiError } from './request'
 
 /** 后端任务行（BizTask 的 JSON 形状；TaskList 与 Home 共用） */
 export interface TaskRow {
@@ -16,45 +16,73 @@ export interface TaskRow {
   createTime: string | null
 }
 
-interface TaskPage {
+/** 游标分页响应（GET /tasks/scroll）：hasMore=true 时 nextCursor* 必同时非空 */
+interface TaskScrollPage {
   records: TaskRow[]
-  total: number
+  hasMore: boolean
+  nextCursorTime: string | null
+  nextCursorId: number | null
 }
 
 /** 每页条数（与后端 TaskService 的 MAX_PAGE_SIZE 上限一致） */
 export const TASKS_PAGE_SIZE = 500
 
-/** 防御上限：最多拉 50 页（2.5 万条），超出截断并告警 */
-const TASKS_MAX_PAGES = 50
-
 /**
- * 分页循环拉取全部任务——修复"固定 size:500 只拉第一页、更多任务被静默遗漏"的问题。
- * 流程：首页探测 total → 并行拉取余下页 → 按 id 去重合并（防两页间数据漂移产生重复）；
- * 总数超过防御上限时截断并 console.warn。
+ * 游标分页拉取全部任务——后端 keyset（create_time DESC, id DESC 稳定排序），无页码上限，
+ * 任务再多也不会像旧 offset 分页那样被页码钳制截断。
+ *
+ * <p>游标分页每页依赖上一页的游标，天然串行（在途请求恒为 1，对后端最温和）。
+ * 终止条件只有后端 hasMore=false；任何异常一律整体抛错——调用方进入失败态，
+ * 绝不把半截数据当全量返回：
+ * <ul>
+ *   <li>非首页出现任何已见 id → 重复页（游标未推进）→ 报错中止；</li>
+ *   <li>hasMore=true 却缺游标 / 声称有下一页却返回空页 → 分页无法推进 → 报错中止。</li>
+ * </ul>
  */
 export async function fetchAllTaskRows(): Promise<TaskRow[]> {
-  const first = await httpGet<TaskPage>('/tasks/page', { page: 1, size: TASKS_PAGE_SIZE })
+  // Map 保插入序：吸收按页序进行，最终数组顺序与后端排序一致
   const byId = new Map<number, TaskRow>()
-  for (const r of first.records ?? []) {
-    if (r.id != null) byId.set(r.id, r)
+  const absorb = (rows: TaskRow[] | undefined): void => {
+    for (const r of rows ?? []) {
+      if (r.id != null && !byId.has(r.id)) byId.set(r.id, r)
+    }
   }
-  const total = Math.max(first.total ?? 0, byId.size)
-  const pages = Math.min(Math.ceil(total / TASKS_PAGE_SIZE), TASKS_MAX_PAGES)
-  if (pages > 1) {
-    console.warn(`任务共 ${total} 条，超过单页 ${TASKS_PAGE_SIZE} 条，分 ${pages} 页拉取`)
-    const rest = await Promise.all(
-      Array.from({ length: pages - 1 }, (_, i) =>
-        httpGet<TaskPage>('/tasks/page', { page: i + 2, size: TASKS_PAGE_SIZE }),
-      ),
-    )
-    for (const pg of rest) {
-      for (const r of pg.records ?? []) {
-        if (r.id != null && !byId.has(r.id)) byId.set(r.id, r)
+
+  let cursorTime: string | null = null
+  let cursorId: number | null = null
+  let firstPage = true
+
+  while (true) {
+    const pg: TaskScrollPage = await httpGet<TaskScrollPage>('/tasks/scroll', {
+      cursorTime,
+      cursorId,
+      size: TASKS_PAGE_SIZE,
+    })
+    const rows = pg.records ?? []
+
+    // keyset 游标严格递进，下一页不可能重复交付已见数据；出现重复 = 后端游标异常
+    if (!firstPage && rows.some((r) => r.id != null && byId.has(r.id))) {
+      throw new ApiError(500, '任务分页出现重复数据（游标未推进），已中止加载')
+    }
+    if (rows.length === 0) {
+      if (pg.hasMore) {
+        throw new ApiError(500, '任务分页无法推进：后端声称还有更多但返回了空页')
       }
+      break // 空页且无更多 = 正常结束
     }
-    if (first.total != null && first.total > pages * TASKS_PAGE_SIZE) {
-      console.warn(`任务总数 ${first.total} 超过防御上限 ${TASKS_MAX_PAGES} 页，已截断`)
+    absorb(rows)
+
+    if (!pg.hasMore) break
+    if (pg.nextCursorTime == null || pg.nextCursorId == null) {
+      throw new ApiError(500, '任务分页无法推进：后端未返回下一页游标')
     }
+    cursorTime = pg.nextCursorTime
+    cursorId = pg.nextCursorId
+    firstPage = false
+  }
+
+  if (byId.size > TASKS_PAGE_SIZE) {
+    console.info(`任务游标分页拉全量完成：共 ${byId.size} 条`)
   }
   return [...byId.values()]
 }

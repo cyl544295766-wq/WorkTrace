@@ -58,14 +58,22 @@ interface HomeTask {
 const router = useRouter()
 const tasks = ref<HomeTask[]>([])
 const loading = ref(true)
+const loadFailed = ref(false)
+const loadErrorMsg = ref('') // 具体失败原因，进横幅文案（网络错误另有 request.ts toast）
 
 async function loadTasks(): Promise<void> {
   loading.value = true
   try {
-    // 分页循环拉全量（>500 条自动翻页合并，按 id 去重），统计与重点任务卡口径更完整
+    // 游标分页拉全量（无页数上限、按 id 去重），统计与重点任务卡口径更完整
     tasks.value = await fetchAllTaskRows()
-  } catch {
-    tasks.value = [] // 错误提示由 request.ts 统一处理
+    loadFailed.value = false
+    loadErrorMsg.value = ''
+  } catch (e) {
+    // 错误 toast 由 request.ts 统一处理；这里再挂失败横幅——
+    // 加载失败时 KPI 全是 0，必须明示这是错误态而非真实数据
+    tasks.value = []
+    loadFailed.value = true
+    loadErrorMsg.value = e instanceof Error && e.message ? e.message : ''
   } finally {
     loading.value = false
   }
@@ -836,6 +844,22 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <!-- 加载失败横幅：任务拉取失败时 KPI 全为 0，明示错误态避免误读成真实数据 -->
+    <el-alert
+      v-if="loadFailed"
+      class="load-fail-alert"
+      type="error"
+      :closable="false"
+      show-icon
+    >
+      <template #title>
+        任务数据加载失败{{ loadErrorMsg ? `：${loadErrorMsg}` : '' }}，以下统计并非真实数据
+        <el-button link type="primary" class="load-fail-alert__retry" @click="loadTasks">
+          重新加载
+        </el-button>
+      </template>
+    </el-alert>
+
     <!-- KPI 统计卡 -->
     <section class="kpi-row" aria-label="任务统计">
       <article
@@ -1581,6 +1605,15 @@ onBeforeUnmount(() => {
 
 .btn-ai.el-button:active {
   transform: translateY(1px) scale(0.99);
+}
+
+/* ── 加载失败横幅 ── */
+.load-fail-alert {
+  margin-bottom: var(--wt-gap);
+}
+
+.load-fail-alert__retry {
+  margin-left: 12px;
 }
 
 /* ── KPI 3D Floating Cards ── */

@@ -8,6 +8,8 @@ import com.worktrace.common.api.Result;
 import com.worktrace.common.exception.BizException;
 import com.worktrace.task.dto.TaskCreateReq;
 import com.worktrace.task.dto.TaskPageReq;
+import com.worktrace.task.dto.TaskScrollPage;
+import com.worktrace.task.dto.TaskScrollReq;
 import com.worktrace.task.dto.TaskUpdateReq;
 import com.worktrace.task.entity.BizTask;
 import com.worktrace.task.entity.BizTaskLog;
@@ -181,6 +183,7 @@ public class TaskService {
      * 分页查询（仅本人 + 状态/日期范围筛选）。
      * 非法页码/页大小一律钳制处理（不报错）：page 钳到 1-1000，size 钳到 1-500（≤0 回退默认 10），
      * 非数字参数由 Spring 类型转换统一 400。
+     * 排序 create_time DESC, id DESC：id 决序保证同秒创建的任务跨页顺序稳定（offset 分页不重不漏的前提）。
      */
     public Page<BizTask> page(Long userId, TaskPageReq req) {
         int current = Math.min(Math.max(req.page(), 1), MAX_PAGE_NUMBER);
@@ -191,9 +194,52 @@ public class TaskService {
                 .eq(req.status() != null, BizTask::getStatus, req.status())
                 .ge(req.startDate() != null, BizTask::getPlanDate, req.startDate())
                 .le(req.endDate() != null, BizTask::getPlanDate, req.endDate())
-                .orderByDesc(BizTask::getCreateTime);
+                .orderByDesc(BizTask::getCreateTime)
+                .orderByDesc(BizTask::getId);
 
         return bizTaskMapper.selectPage(page, wrapper);
+    }
+
+    /**
+     * 游标分页（keyset）：排序固定 (create_time DESC, id DESC)，游标 = 上一页最后一条的
+     * (create_time, id)，取 size+1 条判定 hasMore（末页不多发一次空请求）。
+     *
+     * <p>对比 offset 分页（/page，页码钳 1-1000）：keyset 没有页码上限——前端拉全量走这里，
+     * 任务再多也不会因页码钳制被截断；且页间数据增删不会像 offset 那样造成窗口漂移
+     * （删除只让行数变少，新增的任务排序键比游标新、不会重复交付）。
+     * cursorTime 与 cursorId 必须同时出现或同时为空，半缺即 400（防止隐式从头翻页掩盖游标 bug）。
+     */
+    public TaskScrollPage scroll(Long userId, TaskScrollReq req) {
+        int size = req.size() <= 0 ? MAX_PAGE_SIZE : Math.min(req.size(), MAX_PAGE_SIZE);
+        boolean hasCursor = req.cursorTime() != null || req.cursorId() != null;
+        if (hasCursor && (req.cursorTime() == null || req.cursorId() == null)) {
+            throw new BizException(400, "分页游标参数不完整：cursorTime 与 cursorId 必须同时提供");
+        }
+
+        LambdaQueryWrapper<BizTask> wrapper = wrapsOwned(userId);
+        if (hasCursor) {
+            LocalDateTime t = req.cursorTime();
+            Long cid = req.cursorId();
+            // (create_time < 游标) OR (create_time = 游标 AND id < 游标id)——严格小于游标键，不重复交付
+            wrapper.and(w -> w
+                    .lt(BizTask::getCreateTime, t)
+                    .or(n -> n.eq(BizTask::getCreateTime, t).lt(BizTask::getId, cid)));
+        }
+        wrapper.orderByDesc(BizTask::getCreateTime)
+                .orderByDesc(BizTask::getId)
+                .last("LIMIT " + (size + 1));
+        List<BizTask> rows = bizTaskMapper.selectList(wrapper);
+
+        boolean more = rows.size() > size;
+        if (more) {
+            rows = rows.subList(0, size);
+        }
+        BizTask last = more ? rows.get(rows.size() - 1) : null;
+        return new TaskScrollPage(
+                rows,
+                more,
+                last == null ? null : last.getCreateTime(),
+                last == null ? null : last.getId());
     }
 
     /** 归属过滤条件（user_id = 当前会话用户） */

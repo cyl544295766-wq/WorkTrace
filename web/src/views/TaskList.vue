@@ -259,18 +259,21 @@ async function persistDiff(before: Map<number, string>): Promise<void> {
 
 /** 拉全量组树；parentId 指向缺失父级的行降级为顶层（不丢数据） */
 const loadFailed = ref(false)
+const loadErrorMsg = ref('') // 具体失败原因（网络错误 toast 由 request.ts 弹；游标异常等在这里持久展示）
 async function loadTasks(): Promise<void> {
   loading.value = true
   try {
-    // 分页循环拉全量（>500 条自动翻页合并，按 id 去重），前端组树/筛选/级联都在内存做
+    // 游标分页拉全量（无页数上限、按 id 去重），前端组树/筛选/级联都在内存做
     const rows = await fetchAllTaskRows()
     tasks.value = buildTree(rows.map(fromApi))
     expandedIds.value = new Set() // 新数据默认全部收起
     loadFailed.value = false
+    loadErrorMsg.value = ''
   } catch (e) {
     console.error('loadTasks failed', e)
-    tasks.value = [] // 错误提示由 request.ts 统一处理
+    tasks.value = [] // 失败不展示半截数据；具体原因进空态文案
     loadFailed.value = true
+    loadErrorMsg.value = e instanceof Error && e.message ? e.message : '加载失败，请检查网络后重试'
   } finally {
     loading.value = false
   }
@@ -449,7 +452,7 @@ const filterChips = computed<FilterChip[]>(() => {
 
 /** 空态文案：区分「加载失败 / 搜索无结果 / 筛选无结果 / 什么都没有」，避免误导 */
 const emptyText = computed(() => {
-  if (loadFailed.value) return '加载失败，请检查网络后重试'
+  if (loadFailed.value) return loadErrorMsg.value || '加载失败，请检查网络后重试'
   const q = searchText.value.trim()
   const hasCond = Boolean(statusFilter.value) || Boolean(dateRange.value?.length)
   if (q && hasCond) return `没有匹配「${q}」的任务，试试放宽筛选条件`

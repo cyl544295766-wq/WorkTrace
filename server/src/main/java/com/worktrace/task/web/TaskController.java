@@ -5,6 +5,8 @@ import com.worktrace.auth.dto.LoginUser;
 import com.worktrace.common.api.Result;
 import com.worktrace.task.dto.TaskCreateReq;
 import com.worktrace.task.dto.TaskPageReq;
+import com.worktrace.task.dto.TaskScrollPage;
+import com.worktrace.task.dto.TaskScrollReq;
 import com.worktrace.task.dto.TaskUpdateReq;
 import com.worktrace.task.entity.BizTask;
 import com.worktrace.task.service.TaskService;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 /**
  * 工作任务管理（REST）。
@@ -34,7 +37,8 @@ import java.time.LocalDate;
  *   <li>POST   /api/tasks        —— 新增</li>
  *   <li>DELETE /api/tasks/{id}   —— 删除</li>
  *   <li>PUT    /api/tasks        —— 更新（部分更新）</li>
- *   <li>GET    /api/tasks/page   —— 分页查询（status + 日期范围）</li>
+ *   <li>GET    /api/tasks/page   —— 分页查询（status + 日期范围，页码钳 1-1000）</li>
+ *   <li>GET    /api/tasks/scroll —— 游标分页（keyset，无页码上限，前端拉全量用）</li>
  * </ul>
  */
 @RestController
@@ -104,5 +108,22 @@ public class TaskController {
         }
         TaskPageReq query = new TaskPageReq(page, size, status, startDate, endDate);
         return Result.ok(taskService.page(user.getId(), query));
+    }
+
+    /**
+     * GET /api/tasks/scroll 游标分页（keyset：create_time DESC, id DESC 稳定排序，无页码上限）。
+     * cursorTime/cursorId = 上一页最后一条的排序键（ISO LocalDateTime + id），首页两者都不传。
+     */
+    @GetMapping("/scroll")
+    public Result<TaskScrollPage> scroll(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursorTime,
+            @RequestParam(required = false) Long cursorId,
+            @RequestParam(defaultValue = "500") int size,
+            HttpSession session) {
+        LoginUser user = currentUser(session);
+        if (user == null) {
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
+        }
+        return Result.ok(taskService.scroll(user.getId(), new TaskScrollReq(cursorTime, cursorId, size)));
     }
 }
