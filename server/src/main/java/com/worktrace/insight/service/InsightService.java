@@ -106,9 +106,7 @@ public class InsightService {
             }
         }
 
-        List<BizTask> tasks = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
-                .eq(BizTask::getUserId, userId));
-        Stats stats = Stats.of(tasks);
+        Stats stats = loadStats(userId);
         if (stats.total == 0) {
             return rulesInsight(stats); // 空态引导，不调 AI
         }
@@ -137,9 +135,13 @@ public class InsightService {
         return rulesInsight(stats);
     }
 
-    /* ==================== 统计聚合 ==================== */
+    /* ==================== 统计聚合（数据库聚合，替代原全量行加载 + 内存统计） ==================== */
 
-    /** 任务统计快照（供 prompt 与规则兜底共用；个人任务量级在内存聚合足够） */
+    /**
+     * 任务统计快照（供 prompt 与规则兜底共用；口径与原内存版完全一致）。
+     * 由 3 条轻查询填充：①单行条件聚合 ②分类分布（≤6 行）③未完成标题样例（≤10 行，仅 title 列）——
+     * 不再把该用户全部任务行（含 content 大字段）载入内存。
+     */
     private static final class Stats {
         int total;          // 任务总数（全节点）
         int done;           // 已完成
@@ -157,69 +159,103 @@ public class InsightService {
         double avgProgress; // 平均进度（0-100）
         Map<String, Integer> categories = new LinkedHashMap<>(); // 分类分布（按数量降序，≤6）
         List<String> pendingSamples = new ArrayList<>();          // 未完成任务标题样例（≤10）
+    }
 
-        static Stats of(List<BizTask> tasks) {
-            Stats s = new Stats();
-            s.total = tasks.size();
-            LocalDate today = LocalDate.now();
-            LocalDateTime weekAgo = LocalDateTime.now().minusDays(7);
-            LocalDateTime twoWeeksAgo = LocalDateTime.now().minusDays(14);
-            long progressSum = 0;
-            Map<String, Integer> cats = new LinkedHashMap<>();
-            for (BizTask t : tasks) {
-                int st = t.getStatus() == null ? 0 : t.getStatus();
-                if (st == 2) {
-                    s.done++;
-                    if (t.getFinishTime() != null && t.getFinishTime().isAfter(weekAgo)) {
-                        s.doneLast7++;
-                    }
-                    if (t.getFinishTime() != null && t.getFinishTime().isAfter(twoWeeksAgo)
-                            && !t.getFinishTime().isAfter(weekAgo)) {
-                        s.donePrev7++;
-                    }
-                } else if (st == 1) {
-                    s.doing++;
-                } else if (st == 3) {
-                    s.delayed++;
-                } else {
-                    s.todo++;
-                }
-                if (t.getCreateTime() != null && t.getCreateTime().isAfter(weekAgo)) {
-                    s.newLast7++;
-                }
+    /**
+     * 数据库聚合统计。时间边界（今天 / 7 天 / 14 天）全部由应用端生成后作为字面量拼入
+     * 聚合表达式——与原 Java 内存版用同一时钟、同一比较语义，统计口径不变；
+     * 值均为系统时钟生成，无用户输入，不存在注入面。
+     */
+    private Stats loadStats(Long userId) {
+        Stats s = new Stats();
+        LocalDate today = LocalDate.now();
+        LocalDateTime weekAgo = LocalDateTime.now().minusDays(7);
+        LocalDateTime twoWeeksAgo = LocalDateTime.now().minusDays(14);
+        String d = "'" + today + "'";
+        String w = "'" + weekAgo.toString().replace('T', ' ') + "'";
+        String w2 = "'" + twoWeeksAgo.toString().replace('T', ' ') + "'";
 
-                boolean unfinished = st != 2;
-                if (unfinished && t.getPlanDate() != null) {
-                    if (t.getPlanDate().isBefore(today)) s.overdue++;
-                    else if (t.getPlanDate().equals(today)) s.dueToday++;
-                    if (!t.getPlanDate().isBefore(today) && t.getPlanDate().isBefore(today.plusDays(7))) {
-                        s.dueWeek++;
-                    }
-                }
-                if (unfinished && t.getPriority() != null && t.getPriority() == 3) {
-                    s.highPending++;
-                }
-                if (t.getIsKey() != null && t.getIsKey() == 1) {
-                    s.keyTasks++;
-                }
-                if (t.getProgress() != null) {
-                    progressSum += t.getProgress();
-                }
-                if (t.getCategory() != null && !t.getCategory().isBlank()) {
-                    cats.merge(t.getCategory(), 1, Integer::sum);
-                }
-                if (unfinished && s.pendingSamples.size() < 10
-                        && t.getTitle() != null && !t.getTitle().isBlank()) {
-                    s.pendingSamples.add(t.getTitle());
-                }
-            }
-            s.avgProgress = s.total == 0 ? 0 : Math.round(progressSum * 10.0 / s.total) / 10.0;
-            cats.entrySet().stream()
-                    .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
-                    .limit(6)
-                    .forEach(e -> s.categories.put(e.getKey(), e.getValue()));
-            return s;
+        // ① 单行条件聚合：状态分布 / 逾期 / 到期 / 高优 / 重点 / 完成节奏 / 新增 / 进度和
+        //    口径对应原内存版：todo = 非(1/2/3)（status 列 NOT NULL，恒有值）；
+        //    未完成 = status<>2；done*7 按 finish_time 边界；avgProgress = SUM(progress)/任务总数。
+        List<Map<String, Object>> aggRows = bizTaskMapper.selectMaps(Wrappers.<BizTask>query()
+                .select(
+                        "COUNT(*) AS total",
+                        "SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END) AS done_cnt",
+                        "SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) AS doing_cnt",
+                        "SUM(CASE WHEN status = 3 THEN 1 ELSE 0 END) AS delayed_cnt",
+                        "SUM(CASE WHEN status <> 2 AND plan_date < " + d + " THEN 1 ELSE 0 END) AS overdue",
+                        "SUM(CASE WHEN status <> 2 AND plan_date = " + d + " THEN 1 ELSE 0 END) AS due_today",
+                        "SUM(CASE WHEN status <> 2 AND plan_date >= " + d
+                                + " AND plan_date < '" + today.plusDays(7) + "' THEN 1 ELSE 0 END) AS due_week",
+                        "SUM(CASE WHEN status <> 2 AND priority = 3 THEN 1 ELSE 0 END) AS high_pending",
+                        "SUM(CASE WHEN is_key = 1 THEN 1 ELSE 0 END) AS key_tasks",
+                        "SUM(CASE WHEN status = 2 AND finish_time > " + w + " THEN 1 ELSE 0 END) AS done_last7",
+                        "SUM(CASE WHEN status = 2 AND finish_time > " + w2
+                                + " AND finish_time <= " + w + " THEN 1 ELSE 0 END) AS done_prev7",
+                        "SUM(CASE WHEN create_time > " + w + " THEN 1 ELSE 0 END) AS new_last7",
+                        "COALESCE(SUM(progress), 0) AS progress_sum")
+                .eq("user_id", userId));
+        Map<String, Object> row = aggRows == null || aggRows.isEmpty() ? Map.of() : aggRows.get(0);
+        if (row == null || row.isEmpty()) {
+            return s; // 无任务（理论不可达：无 GROUP BY 的聚合恒返回一行）
         }
+        s.total = num(row, "total");
+        s.done = num(row, "done_cnt");
+        s.doing = num(row, "doing_cnt");
+        s.delayed = num(row, "delayed_cnt");
+        s.todo = s.total - s.done - s.doing - s.delayed; // 与原 else 分支口径一致
+        s.overdue = num(row, "overdue");
+        s.dueToday = num(row, "due_today");
+        s.dueWeek = num(row, "due_week");
+        s.highPending = num(row, "high_pending");
+        s.keyTasks = num(row, "key_tasks");
+        s.doneLast7 = num(row, "done_last7");
+        s.donePrev7 = num(row, "done_prev7");
+        s.newLast7 = num(row, "new_last7");
+        double progressSum = dbl(row, "progress_sum");
+        s.avgProgress = s.total == 0 ? 0 : Math.round(progressSum * 10.0 / s.total) / 10.0;
+
+        // ② 分类分布：按数量降序取前 6（原口径：非空分类计数、降序、≤6）
+        List<Map<String, Object>> catRows = bizTaskMapper.selectMaps(Wrappers.<BizTask>query()
+                .select("category", "COUNT(*) AS cnt")
+                .eq("user_id", userId)
+                .isNotNull("category")
+                .apply("TRIM(category) <> ''")
+                .groupBy("category")
+                .last("ORDER BY cnt DESC LIMIT 6"));
+        for (Map<String, Object> cr : catRows) {
+            Object cat = cr.get("category");
+            if (cat != null) {
+                s.categories.put(String.valueOf(cat), num(cr, "cnt"));
+            }
+        }
+
+        // ③ 未完成任务标题样例：≤10 条（原口径：未完成 + 标题非空白，取前 10）
+        List<BizTask> samples = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
+                .select(BizTask::getTitle)
+                .eq(BizTask::getUserId, userId)
+                .ne(BizTask::getStatus, 2)
+                .isNotNull(BizTask::getTitle)
+                .apply("TRIM(title) <> ''")
+                .last("LIMIT 10"));
+        for (BizTask t : samples) {
+            if (t.getTitle() != null && !t.getTitle().isBlank()) {
+                s.pendingSamples.add(t.getTitle());
+            }
+        }
+        return s;
+    }
+
+    /** selectMaps 数值取值：MySQL 聚合列按驱动返回 Long/BigDecimal 不等，统一 Number → int（NULL 视为 0） */
+    private static int num(Map<String, Object> row, String key) {
+        Object v = row.get(key);
+        return v instanceof Number n ? n.intValue() : 0;
+    }
+
+    private static double dbl(Map<String, Object> row, String key) {
+        Object v = row.get(key);
+        return v instanceof Number n ? n.doubleValue() : 0;
     }
 
     /* ==================== Prompt 与解析 ==================== */

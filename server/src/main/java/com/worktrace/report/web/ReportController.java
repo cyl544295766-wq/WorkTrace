@@ -12,6 +12,7 @@ import com.worktrace.report.entity.BizReport;
 import com.worktrace.report.service.ReportService;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,6 +41,10 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class ReportController {
 
     private final ReportService reportService;
+
+    /** SSE 连接超时（超时触发 onTimeout → Service 取消生成任务）。默认 5 分钟兜底，防连接被无限占用 */
+    @Value("${report.sse.timeout-ms:300000}")
+    private long sseTimeoutMs;
 
     public ReportController(ReportService reportService) {
         this.reportService = reportService;
@@ -75,8 +80,8 @@ public class ReportController {
     /** POST /api/reports/stream-generate —— SSE 流式生成（每块 Markdown 实时推送，结束落库） */
     @PostMapping("/stream-generate")
     public SseEmitter streamGenerate(@Valid @RequestBody GenerateReportReq req, HttpSession session) {
-        // 超时 5 分钟兜底，防止连接被无限占用
-        SseEmitter emitter = new SseEmitter(300_000L);
+        // 连接超时兜底（默认 5 分钟，可配 report.sse.timeout-ms）；超时触发 Service 侧取消生成任务
+        SseEmitter emitter = new SseEmitter(sseTimeoutMs);
         emitter.onTimeout(emitter::complete);
 
         LoginUser user = currentUser(session);

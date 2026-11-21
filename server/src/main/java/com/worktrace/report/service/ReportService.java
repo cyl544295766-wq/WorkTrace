@@ -1,5 +1,6 @@
 package com.worktrace.report.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -45,8 +46,17 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -86,15 +96,126 @@ public class ReportService {
             .build();
 
     /** SSE 推送线程池：大模型流的读取/推送耗时，绝不能占用 Tomcat 工作线程 */
-    private final ExecutorService sseExecutor = Executors.newFixedThreadPool(4, r -> {
-        Thread t = new Thread(r, "report-sse");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ThreadPoolExecutor sseExecutor;
+
+    /**
+     * 进行中的 SSE 生成（任务句柄 + 上游模型流句柄）：客户端断开 / SSE 超时 / 应用关闭时
+     * 据此取消任务并关闭上游流，避免后台任务持续占用线程与连接。
+     */
+    private final Set<InflightGeneration> inFlight = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 有界线程池（替代原 newFixedThreadPool 的无界 LinkedBlockingQueue）：
+     * <ul>
+     *   <li>线程数默认 4——AI 生成是长 IO 任务（单次 10-60s），4 并发已覆盖个人/小团队场景，
+     *       再多只会放大上游 token 成本与超时压力；</li>
+     *   <li>队列容量默认 16——吸收短时突发；队列满走 {@code AbortPolicy} 快速拒绝，
+     *       由调用方转成 SSE error 事件（"服务繁忙，请稍后重试"），绝不无界堆积任务。</li>
+     * </ul>
+     * 两者可用 {@code report.sse.threads} / {@code report.sse.queue-capacity} 覆盖。
+     */
+    public ReportService(BizTaskMapper bizTaskMapper,
+                         BizTaskLogMapper bizTaskLogMapper,
+                         BizReportMapper bizReportMapper,
+                         ObjectMapper objectMapper,
+                         @Value("${report.sse.threads:4}") int sseThreads,
+                         @Value("${report.sse.queue-capacity:16}") int sseQueueCapacity) {
+        this.bizTaskMapper = bizTaskMapper;
+        this.bizTaskLogMapper = bizTaskLogMapper;
+        this.bizReportMapper = bizReportMapper;
+        this.objectMapper = objectMapper;
+        this.restTemplate = buildRestTemplate();
+        AtomicInteger seq = new AtomicInteger();
+        this.sseExecutor = new ThreadPoolExecutor(
+                Math.max(1, sseThreads), Math.max(1, sseThreads), 60L, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(Math.max(1, sseQueueCapacity)),
+                r -> {
+                    Thread t = new Thread(r, "report-sse-" + seq.incrementAndGet());
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    /**
+     * 单个进行中的 SSE 生成：取消状态 + 任务句柄 + 上游模型流句柄。
+     *
+     * <p>线程安全的取消/登记协议（顺序任意均不漏）：{@link #cancel()} 先置取消标志再处理已登记句柄；
+     * {@link #registerFuture} / {@link #registerUpstream} 登记后再查一次标志——若登记前已取消，
+     * 立即取消该任务 / 关闭该流。两侧双端检查，无论取消与登记以何种顺序交错，句柄最终都会被处理。
+     */
+    private static final class InflightGeneration {
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final AtomicReference<Future<?>> future = new AtomicReference<>();
+        private final AtomicReference<Stream<String>> upstream = new AtomicReference<>();
+        private final ThreadPoolExecutor pool;
+
+        InflightGeneration(ThreadPoolExecutor pool) {
+            this.pool = pool;
+        }
+
+        boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        /** 标记取消并处理已登记句柄：中断任务线程、关闭上游流（阻塞读取立即抛异常退出） */
+        void cancel() {
+            cancelled.set(true);
+            cancelFuture();
+            Stream<String> s = upstream.get();
+            if (s != null) {
+                s.close(); // 关闭上游流 → 另一线程里阻塞中的读取立即失败
+            }
+        }
+
+        /** 登记任务句柄；登记前已被取消则立即补偿取消（含排队中任务的立即出队） */
+        void registerFuture(Future<?> f) {
+            future.set(f);
+            if (cancelled.get()) {
+                cancelFuture();
+            }
+        }
+
+        /** 登记上游模型流；登记前已被取消则立即补偿关闭 */
+        void registerUpstream(Stream<String> s) {
+            upstream.set(s);
+            if (cancelled.get()) {
+                s.close();
+            }
+        }
+
+        /** 上游流读取结束后清句柄（仅当仍是当前登记值，避免误清后登记的新句柄） */
+        void clearUpstream(Stream<String> s) {
+            upstream.compareAndSet(s, null);
+        }
+
+        /**
+         * 取消任务句柄：运行中 → 中断；仍在排队 → FutureTask 置取消态<b>并从队列移除</b>，
+         * 立即释放排队容量（否则被取消的任务会一直占着队列槽位直到有空闲线程拾取）。
+         */
+        private void cancelFuture() {
+            Future<?> f = future.get();
+            if (f == null) {
+                return;
+            }
+            f.cancel(true);
+            if (f instanceof Runnable r) {
+                pool.remove(r); // 不在队列中时为 no-op；在队列中则立即出队
+            }
+        }
+    }
 
     @PreDestroy
     public void shutdownSseExecutor() {
+        int cancelled = 0;
+        for (InflightGeneration inflight : inFlight) {
+            inflight.cancel(); // 中断运行中的任务并关闭其上游流；排队中的任务随 shutdownNow 一并丢弃
+            cancelled++;
+        }
         sseExecutor.shutdownNow();
+        if (cancelled > 0) {
+            log.info("应用关闭：已取消 {} 个进行中的报告生成任务并关闭上游模型流", cancelled);
+        }
     }
 
     @Value("${ai.base-url:https://api.deepseek.com/v1}")
@@ -112,17 +233,6 @@ public class ReportService {
             .maximumSize(1_000)
             .expireAfterWrite(Duration.ofMillis(GENERATE_COOLDOWN_MS * 3))
             .build();
-
-    public ReportService(BizTaskMapper bizTaskMapper,
-                         BizTaskLogMapper bizTaskLogMapper,
-                         BizReportMapper bizReportMapper,
-                         ObjectMapper objectMapper) {
-        this.bizTaskMapper = bizTaskMapper;
-        this.bizTaskLogMapper = bizTaskLogMapper;
-        this.bizReportMapper = bizReportMapper;
-        this.objectMapper = objectMapper;
-        this.restTemplate = buildRestTemplate();
-    }
 
     /** 连接 10s / 读取 60s：大模型生成可能较慢，避免无限等待 */
     private RestTemplate buildRestTemplate() {
@@ -208,15 +318,9 @@ public class ReportService {
     public BizReport generateAndSaveReport(Long userId, GenerateReportReq req) {
         guardGenerateCooldown(userId);
 
-        // ① 查该用户在 [startDate, endDate] 内（按 plan_date）的任务
-        List<BizTask> tasks = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
-                .eq(BizTask::getUserId, userId)
-                .ge(BizTask::getPlanDate, req.startDate())
-                .le(BizTask::getPlanDate, req.endDate())
-                .orderByAsc(BizTask::getPlanDate));
-
-        // ② 任务列表 → 结构化 Prompt 上下文
-        String prompt = buildPrompt(userId, req.reportType(), req.startDate(), req.endDate(), tasks);
+        // ① 数据准备 + Prompt 构建（与 SSE 路径共用 buildPrompt：
+        //    完整统计走数据库聚合、明细/跟进按 Prompt 预算限量读取，不再整段载入周期内任务）
+        String prompt = buildPrompt(userId, req.reportType(), req.startDate(), req.endDate());
 
         // ③ 调用大模型（输出上限按报告类型）
         String markdown = callChatModel(prompt, outputBudget(req.reportType()));
@@ -284,23 +388,26 @@ public class ReportService {
     }
 
     /**
-     * 任务数据 → 结构化 Prompt。
+     * 任务数据 → 结构化 Prompt（同步与 SSE 共用的数据准备入口）。
      *
-     * <p>上下文组织（让模型直接拿到可写进报告的结构化事实）：
+     * <p>上下文组织（与历史实现逐字节一致），数据读取按预算收紧：
      * <ul>
-     *   <li><b>树状清单</b>：子任务缩进挂在父任务下；范围内任务的祖先缺失时自动补拉（≤5 层回溯），
-     *       保证层级完整；</li>
-     *   <li><b>未完成任务全量展开</b>（上限 {@value UNFINISHED_CAP}）——它们是「问题与延期 / 后续计划」的
-     *       事实来源；已完成任务按预算展开，超出部分只计数量；</li>
-     *   <li><b>跟进记录</b>：每条任务下挂报告周期内该任务的用户手写叙述
-     *       （≤{@value LOGS_PER_TASK} 条/任务，总行数按报告类型预算）；</li>
+     *   <li><b>完整统计走数据库聚合</b>（总数/状态分布/重点数一条聚合查询）——统计不依赖明细截断，
+     *       任何限量读取都不会让统计变少；</li>
+     *   <li><b>树状清单</b>：子任务缩进挂在父任务下；祖先缺失自动补拉（≤5 层回溯）；</li>
+     *   <li><b>未完成任务全量展开</b>（上限 {@value UNFINISHED_CAP}）；已完成任务按预算展开，
+     *       超出部分只计数量（「另有 N 条…」说明，计数来自决策遍历，语义不变）；</li>
+     *   <li><b>明细按 Prompt 预算限量</b>：决策遍历游标分批加载子级——只访问「根 + 展开节点的子级」，
+     *       根/子节点均 (planDate, id) 稳定排序分页（≤{@value NODE_PAGE_SIZE} 行/页），范围过滤下推 SQL；
+     *       被剪枝子树的内部一行不读；标题/正文/优先级等明细列只对展开集读取；</li>
+     *   <li><b>跟进记录只查展开集</b>（周期范围、单任务 {@value LOGS_PER_TASK} 条、总预算规则不变）；</li>
      *   <li><b>逐字段截断</b>：标题 40 / 详情 60 / 跟进 40 字符。</li>
      * </ul>
      *
-     * <p>数据归属：范围内任务来自主查询（已按 userId 过滤）；缺失祖先补拉与跟进记录查询
-     * 同样必须带 userId —— parentId 一旦指向他人任务 id，不允许把别人的任务/跟进带进报告。
+     * <p>数据归属：所有查询均限定 userId —— parentId 一旦指向他人任务 id，查不到，
+     * 落为孤儿根（"父任务不在本范围"），别人的任务/跟进不进报告。
      */
-    private String buildPrompt(Long userId, String reportType, LocalDate startDate, LocalDate endDate, List<BizTask> tasks) {
+    private String buildPrompt(Long userId, String reportType, LocalDate startDate, LocalDate endDate) {
         String typeCn = switch (reportType) {
             case "DAILY" -> "日报";
             case "WEEKLY" -> "周报";
@@ -308,88 +415,97 @@ public class ReportService {
             default -> reportType;
         };
 
+        // ① 完整统计 = 数据库聚合（不读任务行）
+        Map<String, Object> statsRow = fetchStatsAggregate(userId, startDate, endDate);
+        int total = num(statsRow, "total");
+        int done = num(statsRow, "done_cnt");
+        int doing = num(statsRow, "doing_cnt");
+        int delayed = num(statsRow, "delayed_cnt");
+        int todo = total - done - doing - delayed; // status 非空列：口径同原内存统计（null 视为待办）
+        int keyCount = num(statsRow, "key_cnt");
+
         StringBuilder sb = new StringBuilder();
         sb.append("请根据以下任务数据生成一份").append(typeCn).append("，使用 Markdown 格式。\n");
         sb.append("时间范围：").append(startDate).append(" 至 ").append(endDate).append('\n');
-        sb.append("任务统计：共 ").append(tasks.size()).append(" 条（")
-                .append("已完成 ").append(countStatus(tasks, 2))
-                .append("，进行中 ").append(countStatus(tasks, 1))
-                .append("，待处理 ").append(countStatus(tasks, 0))
-                .append("，已延期 ").append(countStatus(tasks, 3)).append("）");
-        long keyCount = tasks.stream().filter(t -> t.getIsKey() != null && t.getIsKey() == 1).count();
+        sb.append("任务统计：共 ").append(total).append(" 条（")
+                .append("已完成 ").append(done)
+                .append("，进行中 ").append(doing)
+                .append("，待处理 ").append(todo)
+                .append("，已延期 ").append(delayed).append("）");
         sb.append("；重点标记 ").append(keyCount).append(" 条\n");
         sb.append("\n任务清单（子任务缩进展示；「跟进」为用户对该任务的实际工作叙述，是报告的重要事实依据）：\n");
 
-        // ① 节点表：范围内任务 + 缺失祖先（补拉，保证树结构完整）
-        Map<Long, BizTask> nodeMap = new LinkedHashMap<>();
-        List<BizTask> nodes = new ArrayList<>();
-        for (BizTask t : tasks) {
-            if (t.getId() != null) {
-                nodeMap.put(t.getId(), t);
-                nodes.add(t);
-            }
-        }
-        for (int round = 0; round < 5; round++) {
-            Set<Long> missing = new LinkedHashSet<>();
-            for (BizTask t : nodes) {
-                Long pid = t.getParentId();
-                if (pid != null && !nodeMap.containsKey(pid)) {
-                    missing.add(pid);
-                }
-            }
-            if (missing.isEmpty()) {
-                break;
-            }
-            // 归属限制：补拉祖先必须限定当前 userId（禁止只按 id 查）——
-            // parentId 指向他人任务 id 时查不到 → 落为孤儿根（"父任务不在本范围"），别人的任务不进报告
-            List<BizTask> ancestors = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
-                    .in(BizTask::getId, missing)
-                    .eq(BizTask::getUserId, userId));
-            if (ancestors == null || ancestors.isEmpty()) {
-                break;
-            }
-            for (BizTask p : ancestors) {
-                if (!nodeMap.containsKey(p.getId())) {
-                    nodeMap.put(p.getId(), p);
-                    nodes.add(p);
-                }
-            }
-        }
+        // ② 祖先骨架（必要祖先，≤5 轮补拉）+ 容器判定集（完成节点含未完成后代 → 恒展开）
+        Map<Long, BizTask> skeleton = loadAncestorSkeleton(userId, startDate, endDate);
+        Set<Long> skeletonIds = skeleton.keySet();
+        Set<Long> containerIds = loadContainerIds(userId, startDate, endDate, skeleton);
 
-        // ② 建树：父任务在节点表内 → 挂子节点；否则视为根（父任务不在范围 / 已删除）
-        Map<Long, List<BizTask>> childrenMap = new LinkedHashMap<>();
-        List<BizTask> roots = new ArrayList<>();
-        for (BizTask t : nodes) {
-            Long pid = t.getParentId();
-            if (pid != null && nodeMap.containsKey(pid)) {
-                childrenMap.computeIfAbsent(pid, k -> new ArrayList<>()).add(t);
-            } else {
-                roots.add(t);
-            }
-        }
+        // ③ 决策遍历（根节点游标分批）：预算规则不变，只访问根与展开节点的子级；
+        //    根/子节点均 (planDate, id) 稳定排序游标分批（≤NODE_PAGE_SIZE/页），一次不返回全部节点
         Comparator<BizTask> byPlanDate = Comparator.comparing(BizTask::getPlanDate,
                 Comparator.nullsLast(Comparator.naturalOrder()));
-        roots.sort(byPlanDate);
-        childrenMap.values().forEach(list -> list.sort(byPlanDate));
 
-        // ③ 跟进记录：范围内任务在报告周期内的记录（一次查询，按任务分组）
-        List<Long> taskIds = nodes.stream().map(BizTask::getId).toList();
-        Map<Long, List<BizTaskLog>> logsByTask = fetchLogsGroupedByTask(userId, taskIds, startDate, endDate);
-
-        // ④ 树状输出：未完成任务优先保展开；已完成任务受预算控制；跟进记录受总预算控制
+        int completedBudget = detailBudget(reportType);
         int[] seq = {0};                 // 顶层序号
         int[] completedUsed = {0};
-        int[] logsUsed = {0};
         int[] unfinishedUsed = {0};
         int[] completedDropped = {0};
         int[] unfinishedDropped = {0};
-        StringBuilder body = new StringBuilder();
-        int completedBudget = detailBudget(reportType);
+        Set<Long> expandedIds = new LinkedHashSet<>();
+        Map<Long, Integer> seqById = new LinkedHashMap<>();
+        // 空值段判定：plan_date 为空的行只可能来自祖先骨架（周期内 BETWEEN 排除空值）——
+        // 骨架内存信息证明无空值行的分页跳过空值段探测
+        boolean skeletonHasNullDate = false;
+        Set<Long> nullDateParents = new LinkedHashSet<>();
+        for (BizTask t : skeleton.values()) {
+            if (t.getPlanDate() == null) {
+                skeletonHasNullDate = true;
+                if (t.getParentId() != null) {
+                    nullDateParents.add(t.getParentId());
+                }
+            }
+        }
+        NodePager rootPager = new NodePager(userId, null, startDate, endDate, skeletonIds, !skeletonHasNullDate);
+        while (true) {
+            List<BizTask> page = rootPager.nextPage();
+            if (page.isEmpty()) {
+                break;
+            }
+            for (BizTask root : page) {
+                planTaskTree(userId, root, 0, startDate, endDate, skeletonIds, nullDateParents, containerIds,
+                        completedBudget, seq, completedUsed, unfinishedUsed,
+                        completedDropped, unfinishedDropped, expandedIds, seqById);
+            }
+        }
+
+        // ④ 明细按预算：只读展开集的完整行（标题/正文/优先级/进度/工时/重点）
+        Map<Long, BizTask> detailById = fetchDetailRows(userId, expandedIds);
+        Map<Long, List<BizTask>> renderChildren = new LinkedHashMap<>();
+        List<BizTask> renderRoots = new ArrayList<>();
+        for (BizTask t : detailById.values()) {
+            Long pid = t.getParentId();
+            if (pid != null && detailById.containsKey(pid)) {
+                renderChildren.computeIfAbsent(pid, k -> new ArrayList<>()).add(t);
+            } else {
+                renderRoots.add(t);
+            }
+        }
+        renderRoots.sort(byPlanDate);
+        renderChildren.values().forEach(list -> list.sort(byPlanDate));
+
+        // ⑤ 跟进记录：只查展开集的任务（周期范围/单任务条数/总预算规则不变）
+        Map<Long, List<BizTaskLog>> logsByTask =
+                fetchLogsGroupedByTask(userId, new ArrayList<>(expandedIds), startDate, endDate);
+
+        // ⑥ 树状渲染 + 超额说明（计数来自决策遍历，语义与历史实现一致）
+        Map<Long, String> contentById = new LinkedHashMap<>();
+        detailById.forEach((id, t) -> contentById.put(id, t.getContent() == null ? "" : t.getContent()));
+        int[] logsUsed = {0};
         int logTotalBudget = logBudget(reportType);
-        for (BizTask root : roots) {
-            appendTaskTree(body, root, 0, root.getParentId() != null, nodeMap, childrenMap, logsByTask,
-                    completedBudget, logTotalBudget, seq,
-                    completedUsed, logsUsed, unfinishedUsed, completedDropped, unfinishedDropped);
+        StringBuilder body = new StringBuilder();
+        for (BizTask root : renderRoots) {
+            renderTaskTree(body, root, 0, root.getParentId() != null, renderChildren, logsByTask,
+                    contentById, expandedIds, seqById, logTotalBudget, logsUsed);
         }
         sb.append(body);
         if (completedDropped[0] > 0) {
@@ -401,7 +517,7 @@ public class ReportService {
                     .append(" 条未完成任务超出上限未展开，仅计入上方统计）\n");
         }
 
-        // ⑤ 输出要求：事实边界（防虚构）+ 按类型的结构约束
+        // ⑦ 输出要求：事实边界（防虚构）+ 按类型的结构约束
         sb.append("\n输出要求：报告中的事实、进度与数字必须全部来自上方任务数据与跟进记录，不得虚构或编造。");
         if ("DAILY".equals(reportType)) {
             // 日报走精简通道：用户明确要求"不要生成的特别多"
@@ -416,9 +532,67 @@ public class ReportService {
         return sb.toString();
     }
 
-    /** 统计某状态的任务条数（null 视为待办 0） */
-    private long countStatus(List<BizTask> tasks, int status) {
-        return tasks.stream().filter(t -> (t.getStatus() == null ? 0 : t.getStatus()) == status).count();
+    /**
+     * 完整统计聚合（唯一一条查询）：周期内总数/状态分布/重点数。
+     * 统计口径与历史内存统计一致（todo = 其余状态差值；status 非空列，null 视为待办）。
+     */
+    private Map<String, Object> fetchStatsAggregate(Long userId, LocalDate startDate, LocalDate endDate) {
+        List<Map<String, Object>> rows = bizTaskMapper.selectMaps(Wrappers.<BizTask>query()
+                .select("COUNT(*) AS total",
+                        "SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END) AS done_cnt",
+                        "SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) AS doing_cnt",
+                        "SUM(CASE WHEN status = 3 THEN 1 ELSE 0 END) AS delayed_cnt",
+                        "SUM(CASE WHEN is_key = 1 THEN 1 ELSE 0 END) AS key_cnt")
+                .eq("user_id", userId)
+                .ge("plan_date", startDate)
+                .le("plan_date", endDate));
+        return rows == null || rows.isEmpty() ? Map.of() : rows.get(0);
+    }
+
+    /** 聚合列取值：MySQL 聚合按驱动返回 Long/BigDecimal 不等，统一 Number → int（NULL 视为 0） */
+    private static int num(Map<String, Object> row, String key) {
+        Object v = row.get(key);
+        return v instanceof Number n ? n.intValue() : 0;
+    }
+
+    /**
+     * 祖先骨架（必要祖先，≤5 轮补拉、userId 过滤）：周期内任务的父链 + 周期外祖先，
+     * 只取 (id, parentId, status, planDate) 四列——树形结构与游走决策用，明细列不在此读取。
+     * 与历史「nodeMap 补拉」同一语义：parentId 指向他人/已删除任务 → 查不到 → 调用方落孤儿根。
+     */
+    private Map<Long, BizTask> loadAncestorSkeleton(Long userId, LocalDate startDate, LocalDate endDate) {
+        Map<Long, BizTask> skeleton = new LinkedHashMap<>();
+        Set<Long> pending = new LinkedHashSet<>();
+        List<Map<String, Object>> parentRows = bizTaskMapper.selectMaps(Wrappers.<BizTask>query()
+                .select("DISTINCT parent_id AS pid")
+                .eq("user_id", userId)
+                .isNotNull("parent_id")
+                .ge("plan_date", startDate)
+                .le("plan_date", endDate));
+        for (Map<String, Object> r : parentRows) {
+            Object pid = r.get("pid");
+            if (pid instanceof Number n) {
+                pending.add(n.longValue());
+            }
+        }
+        for (int round = 0; round < 5 && !pending.isEmpty(); round++) {
+            List<BizTask> rows = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
+                    .select(BizTask::getId, BizTask::getParentId, BizTask::getStatus, BizTask::getPlanDate)
+                    .in(BizTask::getId, pending)
+                    .eq(BizTask::getUserId, userId));
+            if (rows == null || rows.isEmpty()) {
+                break;
+            }
+            Set<Long> next = new LinkedHashSet<>();
+            for (BizTask t : rows) {
+                if (t.getId() != null && skeleton.putIfAbsent(t.getId(), t) == null
+                        && t.getParentId() != null && !skeleton.containsKey(t.getParentId())) {
+                    next.add(t.getParentId());
+                }
+            }
+            pending = next;
+        }
+        return skeleton;
     }
 
     /**
@@ -446,21 +620,23 @@ public class ReportService {
     }
 
     /**
-     * 递归输出一棵任务子树（缩进 = 层级）。
-     * <p>预算规则：
+     * 决策遍历（游标分批加载子级，不渲染）：按既有预算规则确定「展开任务集」。
+     * <p>预算规则与历史实现逐条一致：
      * <ul>
-     *   <li>已完成且整棵子树无未完成任务 → 受「已完成预算」控制，超出只计数不输出；</li>
-     *   <li>已完成但子树里有未完成任务 → 仍输出（作为未完成子任务的层级容器）；</li>
+     *   <li>已完成且整棵子树无未完成任务 → 受「已完成预算」控制，超出只计数不展开；</li>
+     *   <li>已完成但子树里有未完成任务（{@code containerIds}）→ 仍展开（层级容器，不占预算）；</li>
      *   <li>未完成任务 → 受 {@value UNFINISHED_CAP} 上限保护。</li>
      * </ul>
-     * 计数走 int[]（递归内共享），depth 硬上限防御异常数据成环。
+     * 被剪枝节点整棵子树不再访问（不展开、不计数）——子级经 {@link NodePager} 游标分批读取，
+     * 剪枝子树一行不读。计数走 int[]（递归内共享），depth 硬上限防御异常数据成环。
      */
-    private void appendTaskTree(StringBuilder out, BizTask node, int depth, boolean orphanRoot,
-                                Map<Long, BizTask> nodeMap, Map<Long, List<BizTask>> childrenMap,
-                                Map<Long, List<BizTaskLog>> logsByTask,
-                                int completedBudget, int logTotalBudget, int[] seq,
-                                int[] completedUsed, int[] logsUsed,
-                                int[] unfinishedUsed, int[] completedDropped, int[] unfinishedDropped) {
+    private void planTaskTree(Long userId, BizTask node, int depth,
+                              LocalDate startDate, LocalDate endDate,
+                              Set<Long> skeletonIds, Set<Long> nullDateParents, Set<Long> containerIds,
+                              int completedBudget, int[] seq,
+                              int[] completedUsed, int[] unfinishedUsed,
+                              int[] completedDropped, int[] unfinishedDropped,
+                              Set<Long> expandedIds, Map<Long, Integer> seqById) {
         if (depth > 6) {
             return; // 防御：parentId 异常成环时终止递归
         }
@@ -468,7 +644,7 @@ public class ReportService {
         boolean finished = status == 2;
 
         if (finished) {
-            if (!hasUnfinishedInSubtree(node, childrenMap, 0)) {
+            if (!containerIds.contains(node.getId())) {
                 // 纯完成子树：受预算控制
                 if (completedUsed[0] >= completedBudget) {
                     completedDropped[0]++;
@@ -484,14 +660,224 @@ public class ReportService {
             unfinishedUsed[0]++;
         }
 
-        // 任务行：顶层带序号，子任务按层级缩进
-        String bullet = depth == 0 ? (seq[0] + 1) + ". " : (depth == 1 ? "  - " : "    · ");
         if (depth == 0) {
-            seq[0]++;
+            seqById.put(node.getId(), seq[0]++);
         }
+        expandedIds.add(node.getId());
+
+        // 子级游标分批遍历（仅展开节点触发；剪枝子树不读取）
+        NodePager pager = new NodePager(userId, node.getId(), startDate, endDate, skeletonIds,
+                !nullDateParents.contains(node.getId()));
+        while (true) {
+            List<BizTask> page = pager.nextPage();
+            if (page.isEmpty()) {
+                break;
+            }
+            for (BizTask child : page) {
+                planTaskTree(userId, child, depth + 1, startDate, endDate, skeletonIds, nullDateParents,
+                        containerIds, completedBudget, seq, completedUsed, unfinishedUsed,
+                        completedDropped, unfinishedDropped, expandedIds, seqById);
+            }
+        }
+    }
+
+    /** 展开集明细行（标题/正文/优先级/进度/工时/重点等渲染列）：只按决策遍历实际展开的任务读取 */
+    private Map<Long, BizTask> fetchDetailRows(Long userId, Set<Long> expandedIds) {
+        if (expandedIds.isEmpty()) {
+            return Map.of();
+        }
+        List<BizTask> rows = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
+                .select(BizTask::getId, BizTask::getParentId, BizTask::getTitle, BizTask::getStatus,
+                        BizTask::getPriority, BizTask::getProgress, BizTask::getPlanDate,
+                        BizTask::getActualHours, BizTask::getIsKey, BizTask::getContent)
+                .eq(BizTask::getUserId, userId)
+                .in(BizTask::getId, expandedIds));
+        Map<Long, BizTask> byId = new LinkedHashMap<>();
+        for (BizTask t : rows) {
+            byId.put(t.getId(), t);
+        }
+        return byId;
+    }
+
+    /**
+     * 容器判定集：节点集内未完成任务的全部祖先 id ——「完成节点含未完成后代 → 恒展开（不占预算）」。
+     * 与历史 {@code hasUnfinishedInSubtree} 递归同一语义，但沿父链上溯即可，无需展开子树。
+     */
+    private Set<Long> loadContainerIds(Long userId, LocalDate startDate, LocalDate endDate,
+                                       Map<Long, BizTask> skeleton) {
+        Set<Long> containers = new LinkedHashSet<>();
+        Set<Long> pending = new LinkedHashSet<>();
+        // 种子：节点集内未完成任务的父 id——周期内直接查，骨架中的未完成行内存过滤
+        List<Map<String, Object>> seedRows = bizTaskMapper.selectMaps(Wrappers.<BizTask>query()
+                .select("DISTINCT parent_id AS pid")
+                .eq("user_id", userId)
+                .isNotNull("parent_id")
+                .ne("status", 2)
+                .ge("plan_date", startDate)
+                .le("plan_date", endDate));
+        for (Map<String, Object> r : seedRows) {
+            Object pid = r.get("pid");
+            if (pid instanceof Number n) {
+                pending.add(n.longValue());
+            }
+        }
+        for (BizTask t : skeleton.values()) {
+            if (t.getStatus() != null && t.getStatus() != 2 && t.getParentId() != null) {
+                pending.add(t.getParentId());
+            }
+        }
+        for (int round = 0; round < 10 && !pending.isEmpty(); round++) {
+            Set<Long> needRows = new LinkedHashSet<>(); // 不在骨架中的链条段（周期内节点）→ 批量补查
+            Set<Long> next = new LinkedHashSet<>();
+            for (Long id : pending) {
+                if (id == null || !containers.add(id)) {
+                    continue;
+                }
+                BizTask skelRow = skeleton.get(id);
+                if (skelRow != null) {
+                    if (skelRow.getParentId() != null && !containers.contains(skelRow.getParentId())) {
+                        next.add(skelRow.getParentId());
+                    }
+                } else {
+                    needRows.add(id);
+                }
+            }
+            if (!needRows.isEmpty()) {
+                List<BizTask> rows = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
+                        .select(BizTask::getId, BizTask::getParentId)
+                        .in(BizTask::getId, needRows)
+                        .eq(BizTask::getUserId, userId));
+                for (BizTask t : rows) {
+                    if (t.getParentId() != null && !containers.contains(t.getParentId())) {
+                        next.add(t.getParentId());
+                    }
+                }
+            }
+            pending = next;
+        }
+        return containers;
+    }
+
+    /** 节点游标分页批大小：根/子节点单次查询的行数上限 */
+    private static final int NODE_PAGE_SIZE = 500;
+
+    /**
+     * 节点游标分页器：稳定排序 (plan_date, id)、plan_date 为空的行排最后（与历史 nullsLast 语义一致）。
+     * 两段式 keyset 游标——非空段按 (plan_date, id) 推进、空值段按 id 接续；每页 ≤ {@value NODE_PAGE_SIZE} 行，
+     * 一次绝不返回全部节点，也不逐行查询。骨架内存信息证明无空值行的分页跳过空值段（无空探测）。
+     *
+     * <p>范围过滤（报告周期 ∪ 祖先骨架）全部下推 SQL——不再读取范围外的历史子任务。
+     * {@code parentId == null} = 根节点分页（父级不在节点集内，含周期外祖先的树顶）；
+     * 否则为该父任务的子节点分页（仅展开节点触发）。
+     */
+    private final class NodePager {
+        private final Long userId;
+        private final Long parentId;
+        private final LocalDate startDate;
+        private final LocalDate endDate;
+        private final Set<Long> skeletonIds;
+        private final boolean skipNullPhase;
+        private boolean nullPhase;
+        private LocalDate cursorDate;
+        private Long cursorId;
+        private boolean exhausted;
+
+        NodePager(Long userId, Long parentId, LocalDate startDate, LocalDate endDate,
+                  Set<Long> skeletonIds, boolean skipNullPhase) {
+            this.userId = userId;
+            this.parentId = parentId;
+            this.startDate = startDate;
+            this.endDate = endDate;
+            this.skeletonIds = skeletonIds;
+            this.skipNullPhase = skipNullPhase;
+        }
+
+        /** 下一页（空列表 = 已到末尾）；每次查询最多 {@value NODE_PAGE_SIZE} 行 */
+        List<BizTask> nextPage() {
+            while (!exhausted) {
+                LambdaQueryWrapper<BizTask> w = Wrappers.<BizTask>lambdaQuery()
+                        .select(BizTask::getId, BizTask::getParentId, BizTask::getStatus, BizTask::getPlanDate)
+                        .eq(BizTask::getUserId, userId);
+                // 范围下推：报告周期 ∪ 祖先骨架（不读范围外历史子任务）
+                if (skeletonIds.isEmpty()) {
+                    w.between(BizTask::getPlanDate, startDate, endDate);
+                } else {
+                    w.and(x -> x.between(BizTask::getPlanDate, startDate, endDate)
+                            .or().in(BizTask::getId, skeletonIds));
+                }
+                if (parentId == null) {
+                    // 根 = 父级不在节点集（周期内 ∪ 骨架）内
+                    String skelIn = skeletonIds.isEmpty() ? ""
+                            : " OR p.id IN (" + skeletonIds.stream().map(String::valueOf)
+                                    .collect(Collectors.joining(",")) + ")";
+                    w.apply("(biz_task.parent_id IS NULL OR NOT EXISTS (SELECT 1 FROM biz_task p"
+                                    + " WHERE p.id = biz_task.parent_id AND p.user_id = {0} AND "
+                                    + "(p.plan_date BETWEEN {1} AND {2}" + skelIn + ")))",
+                            userId, startDate, endDate);
+                } else {
+                    w.eq(BizTask::getParentId, parentId);
+                }
+                if (!nullPhase) {
+                    // 非空段：keyset 游标 (plan_date, id)——索引友好
+                    w.isNotNull(BizTask::getPlanDate);
+                    if (cursorDate != null) {
+                        w.apply("(biz_task.plan_date > {0} OR (biz_task.plan_date = {0} AND biz_task.id > {1}))",
+                                cursorDate, cursorId);
+                    }
+                    w.last("ORDER BY biz_task.plan_date ASC, biz_task.id ASC LIMIT " + NODE_PAGE_SIZE);
+                } else {
+                    // 空值段：plan_date IS NULL 的行按 id 接续（排最后）
+                    w.isNull(BizTask::getPlanDate);
+                    if (cursorId != null) {
+                        w.gt(BizTask::getId, cursorId);
+                    }
+                    w.last("ORDER BY biz_task.id ASC LIMIT " + NODE_PAGE_SIZE);
+                }
+                List<BizTask> rows = bizTaskMapper.selectList(w);
+                if (rows.size() >= NODE_PAGE_SIZE) {
+                    BizTask last = rows.get(rows.size() - 1);
+                    cursorDate = nullPhase ? null : last.getPlanDate();
+                    cursorId = last.getId();
+                    return rows;
+                }
+                // 短页 = 当前段到尾
+                if (!nullPhase && !skipNullPhase) {
+                    nullPhase = true;
+                    cursorDate = null;
+                    cursorId = null;
+                    if (!rows.isEmpty()) {
+                        return rows; // 非空段尾页交付后，下一次调用进入空值段
+                    }
+                    continue; // 空页直接探空值段
+                }
+                exhausted = true;
+                return rows;
+            }
+            return List.of();
+        }
+    }
+
+    /**
+     * 渲染遍历（在决策遍历之后执行）：只渲染展开集内的节点，任务预算不再扣减（决策遍历已消费）；
+     * 跟进记录预算在渲染时扣减（与原单遍行为一致）。被丢弃节点整棵子树不渲染（与原 early-return 一致）。
+     */
+    private void renderTaskTree(StringBuilder out, BizTask node, int depth, boolean orphanRoot,
+                                Map<Long, List<BizTask>> childrenMap, Map<Long, List<BizTaskLog>> logsByTask,
+                                Map<Long, String> contentById, Set<Long> expandedIds,
+                                Map<Long, Integer> seqById, int logTotalBudget, int[] logsUsed) {
+        if (depth > 6) {
+            return; // 防御：与决策遍历同款终止条件
+        }
+        if (!expandedIds.contains(node.getId())) {
+            return; // 决策遍历已丢弃（丢弃计数在决策遍历完成）：子树整体不渲染
+        }
+
+        // 任务行：顶层带序号（序号在决策遍历已分配），子任务按层级缩进
+        String bullet = depth == 0 ? (seqById.getOrDefault(node.getId(), 0) + 1) + ". "
+                : (depth == 1 ? "  - " : "    · ");
         out.append(bullet).append(taskLine(node, depth, orphanRoot)).append('\n');
 
-        String desc = clip(node.getContent(), 60);
+        String desc = clip(contentById.get(node.getId()), 60);
         if (!desc.isEmpty()) {
             out.append("  ".repeat(depth)).append("  详情：").append(desc).append('\n');
         }
@@ -516,27 +902,9 @@ public class ReportService {
         }
 
         for (BizTask child : childrenMap.getOrDefault(node.getId(), List.of())) {
-            appendTaskTree(out, child, depth + 1, false, nodeMap, childrenMap, logsByTask,
-                    completedBudget, logTotalBudget, seq,
-                    completedUsed, logsUsed, unfinishedUsed, completedDropped, unfinishedDropped);
+            renderTaskTree(out, child, depth + 1, false, childrenMap, logsByTask,
+                    contentById, expandedIds, seqById, logTotalBudget, logsUsed);
         }
-    }
-
-    /** 子树内（含自身）是否存在未完成任务（判断已完成父任务是否需作为容器保留） */
-    private boolean hasUnfinishedInSubtree(BizTask node, Map<Long, List<BizTask>> childrenMap, int depth) {
-        if (depth > 10) {
-            return false; // 防御：异常数据成环
-        }
-        int status = node.getStatus() == null ? 0 : node.getStatus();
-        if (status != 2) {
-            return true;
-        }
-        for (BizTask child : childrenMap.getOrDefault(node.getId(), List.of())) {
-            if (hasUnfinishedInSubtree(child, childrenMap, depth + 1)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /** 单任务行：标题 + 状态 + 元信息（缩进由调用方 bullet 控制） */
@@ -655,15 +1023,9 @@ public class ReportService {
     public void streamGenerateReport(Long userId, GenerateReportReq req, SseEmitter emitter) {
         guardGenerateCooldown(userId);
 
-        // ① 查该用户在 [startDate, endDate] 内（按 plan_date）的任务
-        List<BizTask> tasks = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
-                .eq(BizTask::getUserId, userId)
-                .ge(BizTask::getPlanDate, req.startDate())
-                .le(BizTask::getPlanDate, req.endDate())
-                .orderByAsc(BizTask::getPlanDate));
-
-        // ② 任务列表 → 结构化 Prompt 上下文
-        String prompt = buildPrompt(userId, req.reportType(), req.startDate(), req.endDate(), tasks);
+        // ① 数据准备 + Prompt 构建（与同步路径共用 buildPrompt：
+        //    完整统计走数据库聚合、明细/跟进按 Prompt 预算限量读取，不再整段载入周期内任务）
+        String prompt = buildPrompt(userId, req.reportType(), req.startDate(), req.endDate());
 
         // ③ 落库对象先备好，流结束后补 content 再 insert
         BizReport report = new BizReport();
@@ -674,37 +1036,84 @@ public class ReportService {
         report.setAiModel(model);
         report.setCreateTime(LocalDateTime.now());
 
-        // ④ 大模型流式调用与 SSE 推送在独立线程执行
-        sseExecutor.execute(() -> {
-            StringBuilder markdown = new StringBuilder();
-            try {
-                streamChatModel(prompt, chunk -> {
-                    markdown.append(chunk);
-                    try {
-                        // ★ 每收到一块数据，实时推送给前端
-                        emitter.send(SseEmitter.event().data(chunk));
-                    } catch (IOException e) {
-                        // 推送失败（客户端断开等）→ 抛运行时异常，由下方统一走 error 事件
-                        throw new IllegalStateException("SSE 推送失败，客户端可能已断开", e);
-                    }
-                }, outputBudget(req.reportType()));
-
-                report.setContent(markdown.toString());
-                bizReportMapper.insert(report);
-
-                emitter.send(SseEmitter.event()
-                        .name("done").data(Map.of("reportId", report.getId())));
-                emitter.complete(); // ★ 传输完毕，正常结束
-            } catch (Exception e) {
-                // ★ 流中断时，已生成的部分内容也落库（附中断标记），用户等待不白费
-                Long partialId = savePartialOnFailure(report, markdown);
-                String message = partialId != null
-                        ? "生成中断，已保存部分内容（可在历史记录查看）"
-                        : "报告生成失败: " + e.getMessage();
-                log.warn("报告生成中断/失败: {}（partialId={}）", e.getMessage(), partialId);
-                sendErrorEvent(emitter, message, partialId);
-            }
+        // ④ 大模型流式调用与 SSE 推送在独立线程执行（有界线程池，满员快速拒绝）
+        InflightGeneration inflight = new InflightGeneration(sseExecutor);
+        // 客户端断开 / SSE 超时 / 连接异常 → 取消任务并关闭上游模型流；
+        // 任务里的取消检查与部分内容保全（savePartialOnFailure）负责收尾。
+        emitter.onCompletion(inflight::cancel);
+        emitter.onError(t -> inflight.cancel());
+        emitter.onTimeout(() -> {
+            log.warn("SSE 报告生成超时，取消任务: userId={}", userId);
+            inflight.cancel();
         });
+
+        Future<?> future;
+        try {
+            future = sseExecutor.submit(() -> {
+                if (inflight.isCancelled()) {
+                    return; // 排队期间已被取消：不调 AI、立即让出（排队容量已由 cancel 移除释放）
+                }
+                inFlight.add(inflight);
+                try {
+                    doStreamGenerate(report, prompt, emitter, inflight);
+                } finally {
+                    inFlight.remove(inflight);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            // 队列满：走既有 SSE error 事件明确提示并结束连接（不能抛给全局异常处理器）
+            log.warn("SSE 报告生成队列已满，快速拒绝: userId={}", userId);
+            sendErrorEvent(emitter, "服务繁忙，请稍后重试");
+            return;
+        }
+        // 登记若发生在取消之后（连接已断/已超时的极小窗口），registerFuture 会立即补偿取消
+        inflight.registerFuture(future);
+    }
+
+    /**
+     * 生成任务体（在 SSE 线程池中执行）：流式调用大模型并实时推送，结束落库；
+     * 失败/取消时保全已生成的部分内容（既有行为）。
+     */
+    private void doStreamGenerate(BizReport report, String prompt, SseEmitter emitter,
+                                  InflightGeneration inflight) {
+        StringBuilder markdown = new StringBuilder();
+        try {
+            streamChatModel(prompt, chunk -> {
+                if (inflight.isCancelled() || Thread.currentThread().isInterrupted()) {
+                    // 任务已被取消（客户端断开/超时/应用关闭）：停止消费，上游流由取消方关闭
+                    throw new IllegalStateException("任务已取消");
+                }
+                markdown.append(chunk);
+                try {
+                    // ★ 每收到一块数据，实时推送给前端
+                    emitter.send(SseEmitter.event().data(chunk));
+                } catch (IOException e) {
+                    // 推送失败（客户端断开等）→ 抛运行时异常，由下方统一走 error 事件
+                    throw new IllegalStateException("SSE 推送失败，客户端可能已断开", e);
+                }
+            }, outputBudget(report.getReportType()), inflight);
+
+            report.setContent(markdown.toString());
+            bizReportMapper.insert(report);
+
+            emitter.send(SseEmitter.event()
+                    .name("done").data(Map.of("reportId", report.getId())));
+            emitter.complete(); // ★ 传输完毕，正常结束
+        } catch (Exception e) {
+            boolean wasCancelled = Thread.interrupted(); // 清除取消中断标记，防污染线程池后续任务
+            // ★ 流中断时，已生成的部分内容也落库（附中断标记），用户等待不白费
+            Long partialId = savePartialOnFailure(report, markdown);
+            String message = partialId != null
+                    ? "生成中断，已保存部分内容（可在历史记录查看）"
+                    : "报告生成失败: " + e.getMessage();
+            if (wasCancelled) {
+                log.info("报告生成已取消（客户端断开/超时/应用关闭）: userId={}（partialId={}）",
+                        report.getUserId(), partialId);
+            } else {
+                log.warn("报告生成中断/失败: {}（partialId={}）", e.getMessage(), partialId);
+            }
+            sendErrorEvent(emitter, message, partialId);
+        }
     }
 
     /** 失败兜底：已流出部分内容 → 附中断标记落库，返回报告 id（无可存内容或落库失败返回 null） */
@@ -732,7 +1141,8 @@ public class ReportService {
      * data: [DONE]
      * </pre>
      */
-    private void streamChatModel(String prompt, ChunkConsumer onChunk, int maxTokens) {
+    private void streamChatModel(String prompt, ChunkConsumer onChunk, int maxTokens,
+                                 InflightGeneration inflight) {
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException("未配置 AI api-key（application.yml 的 ai.api-key 或环境变量 AI_API_KEY）");
         }
@@ -771,29 +1181,43 @@ public class ReportService {
             throw new IllegalStateException("请求被中断", e);
         }
 
-        if (response.statusCode() != 200) {
-            throw new IllegalStateException("大模型返回 HTTP " + response.statusCode()
-                    + "（检查 base-url / api-key / model 配置）");
-        }
-
+        // ★ 响应体流关闭统一收口：非 200 / 解析失败 / 中断 / 正常结束 全部经 try-with-resources 关闭
+        //   （send 阶段失败尚无响应体，无流可关）。
         try (Stream<String> lines = response.body()) {
-            boolean finished = false;
-            for (Iterator<String> it = lines.iterator(); it.hasNext() && !finished; ) {
-                String line = it.next();
-                if (line == null || !line.startsWith("data:")) {
-                    continue; // SSE 空行 / 注释行
+            try {
+                // 上游流句柄交取消方托管（登记前已被取消则立即补偿关闭）
+                inflight.registerUpstream(lines);
+                if (response.statusCode() != 200) {
+                    throw new IllegalStateException("大模型返回 HTTP " + response.statusCode()
+                            + "（检查 base-url / api-key / model 配置）");
                 }
-                String payload = line.substring("data:".length()).trim();
-                if ("[DONE]".equals(payload)) {
-                    finished = true; // 流结束标记
-                    break;
+                boolean finished = false;
+                for (Iterator<String> it = lines.iterator(); it.hasNext() && !finished; ) {
+                    if (inflight.isCancelled() || Thread.currentThread().isInterrupted()) {
+                        throw new IllegalStateException("任务已取消（上游流将被关闭）");
+                    }
+                    String line = it.next();
+                    if (line == null || !line.startsWith("data:")) {
+                        continue; // SSE 空行 / 注释行
+                    }
+                    String payload = line.substring("data:".length()).trim();
+                    if ("[DONE]".equals(payload)) {
+                        finished = true; // 流结束标记
+                        break;
+                    }
+                    JsonNode delta = objectMapper.readTree(payload)
+                            .path("choices").path(0).path("delta");
+                    String content = delta.path("content").asText("");
+                    if (!content.isEmpty()) {
+                        onChunk.accept(content); // ★ 逐块回调（失败会抛出，由上层统一捕获）
+                    }
                 }
-                JsonNode delta = objectMapper.readTree(payload)
-                        .path("choices").path(0).path("delta");
-                String content = delta.path("content").asText("");
-                if (!content.isEmpty()) {
-                    onChunk.accept(content); // ★ 逐块回调（失败会抛出，由上层统一捕获）
+                if (inflight.isCancelled() || Thread.currentThread().isInterrupted()) {
+                    // 取消恰好落在流自然结束的间隙：也不能按"成功"落库
+                    throw new IllegalStateException("任务已取消");
                 }
+            } finally {
+                inflight.clearUpstream(lines); // 流已关闭（无论正常/异常/被取消方关闭），句柄清空
             }
         } catch (IOException e) {
             throw new IllegalStateException("读取大模型流式响应失败: " + e.getMessage(), e);
