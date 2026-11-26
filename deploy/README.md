@@ -78,28 +78,27 @@ SSH_KEY=C:/Users/15003/.ssh/travel_os_deploy
 systemd  worktrace.service        # /etc/systemd/system/worktrace.service，enable 开机自启
 env      /home/ubuntu/worktrace/worktrace.env   # chmod 600：DB_PASSWORD / AI_API_KEY
 jar      /home/ubuntu/worktrace/app.jar         # ExecStart 指向这里；backups/ 同目录
-MySQL    Docker 容器 worktrace-mysql（mysql:8.4，见下"数据库"小节），应用连 127.0.0.1:3306/work_system，账号 wt_app@'%'
+MySQL    Docker 容器 monevo-mysql（共享实例，2026-11-26 实测），应用连 127.0.0.1:3306/work_system，凭据见本应用 worktrace.env
 后端     0.0.0.0:8083（worktrace.env 的 SERVER_PORT/SERVER_ADDRESS；内网与容器可直连，8083 未放行公网不可直连）
 前端     /var/www/worktrace/（publish.sh 第 5 步 rsync --delete 发布）
-nginx    :8081 = WorkTrace（deploy/nginx/worktrace.conf）｜:80 = Monevo Console（monevo-nginx 容器）｜:8001 = adminer
+nginx    :8081 = WorkTrace（deploy/nginx/worktrace.conf）；同机其他应用入口独立，本次不调整
 DDL      /home/ubuntu/worktrace/init-sql/（01→01a→02..08→09→10→11 顺序已执行）
 ```
 
-### 数据库（2026-11-05 起 Docker 运行，与 NewTrevl 同为容器化）
+### 数据库（2026-11-26 生产核对）
 
 服务器上 **PG 和 MySQL 现在都在 Docker**：
 
 ```
-容器 worktrace-mysql     mysql:8.4      127.0.0.1:3306 → work_system（19 表）
+容器 monevo-mysql        共享 MySQL    127.0.0.1:3306 → work_system（WorkTrace 独立库）
 容器 travel-os-postgres  postgres:16    （NewTrevl 的库）
 原生 MySQL（apt 装的 8.0.46）→ 已 stop + disable，数据留在 /var/lib/mysql 作回滚底牌
 ```
 
-- **root 密码**：随机生成，存 `/home/ubuntu/worktrace/.mysql-root-pw`（chmod 600）
-- **进库**：`sudo docker exec -it worktrace-mysql mysql -uroot -p"$(cat /home/ubuntu/worktrace/.mysql-root-pw)" work_system`（`sudo mysql` 走 socket 的老命令**已失效**）
-- **备份**：`sudo docker exec worktrace-mysql mysqldump -uroot -p"$(cat …/.mysql-root-pw)" --databases work_system | gzip > ~/wt_$(date +%F).sql.gz`
-- **重启库**：`sudo docker restart worktrace-mysql`（`--restart unless-stopped`，开机自启）
-- **回滚到底**（万一容器化有问题）：`sudo docker rm -f worktrace-mysql && sudo systemctl enable --now mysql` —— 原生数据原封未动
+- **认证来源**：`/home/ubuntu/worktrace/worktrace.env` 中本应用的 DB_USERNAME / DB_PASSWORD。用宿主机客户端通过 TCP 连接 `127.0.0.1:3306/work_system`，不输出密码，也不读取其他应用凭据。
+- **旧凭据失效**：原 `worktrace-mysql` 容器已不存在，旧 `.mysql-root-pw` 认证失败，不要沿用旧 root 登录命令。
+- **备份**：本次使用本应用配置账号，仅对 `work_system` 执行 `mysqldump --single-transaction --routines --triggers --events --no-tablespaces --set-gtid-purged=OFF --databases work_system`，通过受限进程环境传入密码，输出压缩保存至权限受限备份目录；路径见 HANDOFF。
+- **共享边界**：WorkTrace 发布只重启 `worktrace.service`，不要重启、删除共享 MySQL 容器或启用旧原生 MySQL来回退。
 - 迁移用的全量备份与授权文件在 `/home/ubuntu/worktrace/db-backups/`（`work_system.pre-docker.*.sql.gz` + `wt_app-grants.fixed.sql`）
 
 **同机共存（重要）**：这台服务器还跑着 **NewTrevl（travel-os）**——`travel-os-api` systemd 服务、PostgreSQL 容器、**nginx :80 站点 `/var/www/travel-os`**。给 WorkTrace 配外网入口时注意：
@@ -112,10 +111,10 @@ DDL      /home/ubuntu/worktrace/init-sql/（01→01a→02..08→09→10→11 顺
 
 | 症状 | 处理 |
 |---|---|
-| 发布在第 5 步失败 | 脚本已自动回滚备份并重启；服务器上 `sudo journalctl -u worktrace -n 50` |
+| 发布在第 5 步失败 | 前端发布失败不会自动回退；按 HANDOFF 恢复同版前后端备份并核对健康状态 |
 | 健康检查过不去 | `curl -sm 3 http://127.0.0.1:8083/actuator/health`；确认 `systemctl status worktrace` |
 | md5 不一致中止 | 网络传输问题，重跑 `./deploy/publish.sh` 即可（会重新构建+传输） |
-| 登录/接口 500 | 查 DB：`sudo docker exec worktrace-mysql mysql -uroot -p"$(cat /home/ubuntu/worktrace/.mysql-root-pw)" -e "SELECT COUNT(*) FROM work_system.biz_task"`；时区表缺失会导致连接失败（见下） |
+| 登录/接口 500 | 用本应用配置账号经 TCP 查询 `work_system.biz_task`，核对字段迁移、连接状态与应用日志；不要再使用已失效的旧容器/root 命令 |
 | 新机器初始化库 | Docker MySQL 容器内先 `mysql_tzinfo_to_sql /usr/share/zoneinfo \| mysql -uroot -p$PW mysql` 加载时区表（JDBC `connectionTimeZone=Asia/Shanghai` 依赖，**就绪判断用 `mysql -e 'SELECT 1'` 校验密码，别信 mysqladmin ping**——临时 server 阶段 ping 也返回成功），再按序跑 `init-sql/*.sql`（含 `11_biz_tables.sql`——`biz_task`/`biz_report` 不在 01-10 分片里） |
 | 构建失败 | 本地 `./deploy/publish.sh --build-only` 复现（编译错误在第 1 步就会中止，服务器不受影响） |
 | 外网 `:8081` 打不开（本机 curl 正常） | 腾讯云安全组未放行 TCP:8081 → 控制台加入站规则；再查 `sudo nginx -t`、`ss -tlnp \| grep 8081` |

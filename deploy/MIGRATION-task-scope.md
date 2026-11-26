@@ -1,7 +1,7 @@
 # 任务范围（task_scope）生产迁移手册
 
 > 变更日期：2026-11-26。对应代码提交见 `deploy/HANDOFF.md`。
-> **状态：本手册未在生产执行——生产数据库迁移与正式发布另行安排（见 HANDOFF「待生产验证」）。**
+> **生产迁移已于 2026-11-26 14:55（Asia/Shanghai）完成**：124 条存量任务全部 COMPANY，报告 0 条、跟进 6 条，原字段指纹及各用户任务数保持一致。备份：`/home/ubuntu/worktrace/backups/scope-release-20261126145501/`。应用发布结果见 HANDOFF。
 
 ## 一、变更内容
 
@@ -12,15 +12,16 @@
 | 存量数据 | 首次执行后**全部任务归入 COMPANY**；id、用户、父子关系、重点标记、状态、进度、日期、跟进记录全部不变 |
 | 破坏性操作 | **无**——脚本只做「缺列则加列」与「空串修补」，不 DELETE/TRUNCATE/重建任何表 |
 
-执行账号：**需要 DDL 权限（root / DBA 账号）**。应用账号 `wt_app` 只有 DML 权限，
-直接用它执行会报 `ERROR 1142: ALTER command denied`（本地已实测）。
+执行账号需要 `work_system` 库的 ALTER 及备份所需权限。权限取决于实际环境：本地曾使用的 `wt_app` 只有 DML，执行 ALTER 报 1142；本次生产核对应用自身配置账号已具备库级 ALL PRIVILEGES，使用该账号完成备份和迁移。认证仅从 `/home/ubuntu/worktrace/worktrace.env` 的数据库配置读取，密码不写入命令参数、输出或仓库。
+
+生产现通过宿主机 `mysql` / `mysqldump` 客户端连接 `127.0.0.1:3306/work_system`，实际容器为共享的 `monevo-mysql`。不要停止共享数据库容器或操作其他库；旧 `worktrace-mysql` 容器及 `.mysql-root-pw` 登录说明已失效。
 
 ## 二、执行顺序
 
 ```
 1) 备份（见下节）
 2) 停应用  —— systemctl stop worktrace   （避免迁移期间应用写入未带新列的语句）
-3) 执行迁移：mysql -u <root> -p work_system < server/db/14_task_scope.sql   （可重复执行）
+3) 执行迁移：使用已确认权限的账号连接 work_system，执行 server/db/14_task_scope.sql（可重复执行）
 4) 核对（见下节）
 5) 发布应用：bash deploy/publish.sh      （新代码才认识 task_scope 字段）
 6) 起应用并健康检查：systemctl start worktrace
@@ -38,13 +39,14 @@
 # 结构 + 数据（单文件，含 DROP/CREATE 语句，可整库恢复）
 mysqldump -u <root> -p --databases work_system \
   | gzip > /backup/work_system-pre-scope-$(date +%Y%m%d%H%M).sql.gz
-# 或仅业务表数据（不含结构，用于列级回退）
+# 或仅业务表备份（包含这三张表的结构与数据）
 mysqldump -u <root> -p work_system biz_task biz_report biz_task_log \
   | gzip > /backup/biz-data-pre-scope-$(date +%Y%m%d%H%M).sql.gz
 ```
 
 **回退说明**：
-- 迁移**只加列、不改数据**，回退 = 删列（应用需回退到不含 task_scope 的版本）：
+- 应用回退时优先保留新增列，旧版本可以容忍新列；恢复同版前后端后检查健康与数据。若已新增 PERSONAL 任务，先评估旧版不识别范围对任务列表与报告的影响，避免两类数据混用。
+- 仅在确认不再需要范围字段及已有取值后，才考虑人工移除新增列；此操作不属于自动回退步骤：
   ```sql
   ALTER TABLE biz_task DROP COLUMN task_scope;
   ALTER TABLE biz_report DROP COLUMN task_scope;
