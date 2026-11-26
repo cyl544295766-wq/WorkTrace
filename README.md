@@ -1,6 +1,6 @@
 # WorkTrace
 
-个人工作留痕系统。当前已实现：**登录会话、首页（设计图还原）、任务管理（多级树 / 进度 / 跟进记录 / 完成时间 / 重点标记）、AI 工作洞察、AI 工作报告（SSE 流式）、统一响应与全局异常、防重复提交注解**。
+个人工作留痕系统。当前已实现：**登录会话、首页（设计图还原）、任务管理（多级树 / 进度 / 跟进记录 / 完成时间 / 重点标记 / 公司·个人双范围）、AI 工作洞察、AI 工作报告（SSE 流式）、统一响应与全局异常、防重复提交注解**。
 
 页面：首页 `/`、登录 `/login`、任务管理 `/tasks`、AI 报告生成 `/reports`；另有一个已实现但尚未挂路由的工作统计大屏 `Dashboard.vue`。数据库统一由 `docker-compose.yml` 管理，库内只保留 6 张在用表（设计稿中未实现的 14 张表已由 `12_drop_unused.sql` 裁剪）。
 
@@ -24,6 +24,7 @@
 
 ### 任务管理（`task`，`/tasks` → `TaskList.vue`）
 
+- **范围（公司/个人）**：`biz_task.task_scope` 取值 `COMPANY`/`PERSONAL`（独立字段，不复用 `category`），页面顶部 `el-segmented` 切换，**默认公司任务**；切换后树、统计、搜索、筛选、分页、批量选择全部限定在当前范围。新增顶层任务写入当前范围，子任务**必须继承父任务范围**——后端校验父任务归属与范围，跨范围挂接返回 400。范围调整走 `PUT /api/tasks/{id}/scope`（**整棵子树一起迁移**，返回受影响条数；子任务不能单独迁移，`@Transactional` 保证失败整体回滚），普通 `PUT /api/tasks` 带不同范围会被拒绝。切换时先冲刷未保存的行内编辑、重置分页/勾选/编辑态，并用 `createLatestGuard` 丢弃晚返回的旧范围响应
 - **层级**：`parent_id` 前端组树，**每级 64px 真缩进 + 自制展开箭头**（EP 原生缩进/箭头渲染在首列、深层箭头会被标题文字盖住，已弃用改由标题列自制接管），父/子/孙三层底色（父行深蓝分组条 / 子级白底 / 子孙级浅蓝底+浅蓝条）；删除任务级联删除全部后代（BFS 收集）与跟进记录
 - **行内编辑**：标题、类型、状态、优先级、计划日期直接点单元格修改，改动按快照 diff 即时回写；类型/状态/优先级以白底芯片标签呈现（状态/优先级药丸形带同色圆点、类型圆角芯片），点击即改
 - **进度**：叶子任务行内滑块**用户直接拖**（0-100，步长 5）；父任务显示子任务进度**均值派生**条。拖满 ⇔ 勾选完成双向联动（完成时进度=100，拖离 100 移出完成）
@@ -31,17 +32,19 @@
 - **跟进记录**：`biz_task_log` 时间线（找领导核实 / 备注 / 开发 / 其他），抽屉内新增 / 按时间线展示 / 逐条删除
 - **重点标记**：操作列「设重点 / 取消重点」+ 标题橙色星标（`biz_task.is_key`）；首页只展示未完成的重点任务，按紧急程度、计划日期、优先级和 ID 排序取 3 条，类型选「其他」可自定义输入
 - **小屏适配**：≤1440 自动收起「完成时间」列（matchMedia 断点驱动摘列，数据不丢），1280 级别屏幕无横向滚动，宽屏列自动回归
-- **接口**：`GET /api/tasks/page`（一次拉全量，前端组树与筛选）、`POST /api/tasks`、`PUT /api/tasks`、`DELETE /api/tasks/{id}`；`GET /api/tasks/logs?taskId=`、`POST /api/tasks/logs`、`DELETE /api/tasks/logs/{id}`
+- **接口**：`GET /api/tasks/page`（一次拉全量，前端组树与筛选，`taskScope` 可选、缺省 COMPANY）、`GET /api/tasks/scroll`（游标分页，同样按 user+scope 过滤）、`POST /api/tasks`、`PUT /api/tasks`、`DELETE /api/tasks/{id}`、`PUT /api/tasks/{id}/scope`（整树迁移范围）；`GET /api/tasks/logs?taskId=`、`POST /api/tasks/logs`、`DELETE /api/tasks/logs/{id}`
 
 ### 首页（`/` → `Home.vue`）
 
+- **范围开关**：顶部「公司任务 / 个人任务」切换（默认公司任务），KPI、任务走势、状态分布、今日聚焦、AI 洞察全部限定当前范围，洞察来源标注「基于公司/个人任务的分析」；切换即清空旧洞察并按新范围重新拉取
 - 问候横幅（小时问候 + ICU 中文农历）、KPI 四卡（全部 / 进行中 / 已完成 / 待处理，真数据派生）
 - 任务走势（ECharts 折线，近 7/30/90 天按创建 / 完成时间按日聚合）、任务状态分布（环形）
 - 重点任务卡：仅展示 `is_key=1` 且未完成的前 3 项，依次排列逾期、今日到期、未来到期、无日期任务；同组按计划日期升序、优先级降序、ID 升序。展示具体逾期天数、今日/明日到期或日期，并区分未完成重点数与重点总数。勾选只提交完成状态，成功回读后补位，重点标记保留；全部完成有独立空态。前端回归测试：`cd web && npm run test:focus`。
 - AI 工作洞察卡（见下）；AI 报告中心入口（跳 `/reports?type=` 预选）
 
-### AI 工作洞察（`insight`，`GET /api/insights/work`）
+### AI 工作洞察（`insight`，`GET /api/insights/work?taskScope=`）
 
+- **范围感知**：统计、分类、样例、缓存键（`userId|scope`）、响应快照全部带范围——公司/个人结果互不污染；`buildPrompt` 开头注入「统计范围：公司任务/个人任务」，解析与规则兜底同样限定范围。缺省 `COMPANY`
 - 按当前用户真实任务统计生成洞察：后端组装总数、已完成、未完成等数值事实，DeepSeek 提供不含数字的定性解释与建议。分类累计数包含已完成任务，另列分类未完成数；「新增需求」分类与按创建时间计算的周期新增无关。
 - **降级在服务端**：模型输出数量、中文数词、错误格式，或 AI key 缺失 / 超时 / 无任务时，返回基于同一统计快照的规则文案（source=RULES）；输出数量或格式不可信时直接降级，网络瞬时失败重试一次。响应携带 `stats`，首页仅在快照与当前任务卡片一致时展示，其他情况用当前任务生成本地规则文案。
 - Caffeine 按用户缓存 AI 结果 30 分钟，命中前核对当前统计、分类、样例和协议版本；变化或主动刷新即失效，失败后旧缓存不会恢复。RULES 不缓存；配置复用 `ai.*`（与 AI 报告共用）。
@@ -49,7 +52,8 @@
 ### AI 报告（`report`，`/reports` → `ReportGenerator.vue`）
 
 - `POST /api/reports/generate` 一次性生成；`POST /api/reports/stream-generate` **SSE 流式推送**（前端逐字渲染）
-- **生成记录**：报告全部落库 `biz_report`（按 userId 隔离），页面下方列出历史记录（`GET /api/reports/page` 摘要分页、`GET /api/reports/{id}` 全文、`DELETE /api/reports/{id}` 删除）；查看抽屉以 markdown-it + DOMPurify 渲染 Markdown，支持复制 / 导出
+- **范围**：请求体 `taskScope` 默认 `COMPANY`（个人报告需显式选择，页面有「任务范围」单选）；统计聚合、祖先骨架、明细日志、任务树游走全部限定 user+scope，报告不会混入个人任务；生成记录保存 `biz_report.task_scope`，历史报告统一归 `COMPANY`
+- **生成记录**：报告全部落库 `biz_report`（按 userId 隔离），页面下方列出历史记录（`GET /api/reports/page` 摘要分页、`GET /api/reports/{id}` 全文、`DELETE /api/reports/{id}` 删除，列表含「范围」列）；查看抽屉以 markdown-it + DOMPurify 渲染 Markdown，支持复制 / 导出
 
 ### 公共能力（`common`）
 
@@ -64,7 +68,7 @@ WorkTrace/
 ├─ docker-compose.yml           # 三容器编排：mysql（初始化 00–12 脚本）、backend、frontend
 ├─ docker/mysql-init/           # 容器专用初始化：00 时区表、09 账号主机适配
 ├─ server/
-│  ├─ db/                       # DDL 分片 01–13（11=业务表，12=裁剪未用表，13=is_key 幂等迁移）+ 执行/验收说明
+│  ├─ db/                       # DDL 分片 01–14（11=业务表，12=裁剪未用表，13=is_key 幂等迁移，14=task_scope 幂等迁移）+ 执行/验收说明
 │  ├─ src/main/java/com/worktrace/
 │  │  ├─ auth/                  # 登录会话（AuthController、LoginInterceptor、SysUser 实体/映射）
 │  │  ├─ common/
@@ -131,13 +135,13 @@ docker compose restart mysql
 | 顺序 | 来源 | 作用 |
 |---|---|---|
 | `00_load_tz.sh` | `docker/mysql-init/` | 加载 MySQL 时区表（JDBC 使用 `Asia/Shanghai` 必需） |
-| `01`–`12` | `server/db/` | DDL 分片：`01–08` 设计稿建表（含 `01a` Spring Session 两张表——**唯一 DDL 来源**）、`10` 演示账号、`11` 业务表（`biz_task` 含 `is_key`/`finish_time`/`progress`、`biz_task_log`）、`12` 裁剪未实现表。`13` 面向存量库（幂等补 `is_key`），**不在容器初始化序列** |
+| `01`–`12` | `server/db/` | DDL 分片：`01–08` 设计稿建表（含 `01a` Spring Session 两张表——**唯一 DDL 来源**）、`10` 演示账号、`11` 业务表（`biz_task` 含 `is_key`/`finish_time`/`progress`/`task_scope`、`biz_task_log`、`biz_report` 含 `task_scope`）、`12` 裁剪未实现表。`13`（幂等补 `is_key`）、`14`（幂等补 `task_scope`）面向存量库，**不在容器初始化序列** |
 | `09_docker_app_user.sql` | `docker/mysql-init/` | 把 `wt_app` 账号主机改为 `%`，适配宿主机经端口映射连接 |
 
 > 本环境若无法访问 Docker Hub，可先从镜像站拉取再打标签：
 > `docker pull docker.m.daocloud.io/library/mysql:8.4 && docker tag docker.m.daocloud.io/library/mysql:8.4 mysql:8.4`
 
-**用本机 MySQL 替代 Docker（可选）**：在 `server/db` 目录按 01→13 顺序执行全部分片即可，此时 `wt_app` 按设计使用 `'wt_app'@'127.0.0.1'`，无需 `09` 适配脚本；并自行加载时区表：
+**用本机 MySQL 替代 Docker（可选）**：在 `server/db` 目录按 01→14 顺序执行全部分片即可，此时 `wt_app` 按设计使用 `'wt_app'@'127.0.0.1'`，无需 `09` 适配脚本；并自行加载时区表：
 
 ```bash
 mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root -p mysql
@@ -145,7 +149,7 @@ mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root -p mysql
 
 `08_sys_seed.sql` 会创建应用账号 `wt_app`（密码 `WorkTrace_App_2026!`）；`10_sys_user.sql` 创建演示账号 `admin`（密码 `admin123`，明文，仅供登录模块联调，生产必须改存 BCrypt 哈希并替换密码）。
 
-**存量库升级**（已建过表的开发机/服务器）：`CREATE TABLE IF NOT EXISTS` 对已存在的表不生效，需执行 `server/db/11_biz_tables.sql` 头部注释里的 `ALTER`（补 `parent_id`/`category`/`finish_time`/`progress` 等历史列）并单独 `CREATE TABLE biz_task_log`；`is_key` 列直接跑幂等脚本 `server/db/13_task_is_key.sql`（重复执行安全）。
+**存量库升级**（已建过表的开发机/服务器）：`CREATE TABLE IF NOT EXISTS` 对已存在的表不生效，需执行 `server/db/11_biz_tables.sql` 头部注释里的 `ALTER`（补 `parent_id`/`category`/`finish_time`/`progress` 等历史列）并单独 `CREATE TABLE biz_task_log`；`is_key` 列直接跑幂等脚本 `server/db/13_task_is_key.sql`，`task_scope` 列直接跑 `server/db/14_task_scope.sql`（均重复执行安全，**14 含 ALTER、需 root/DBA 账号**，`wt_app` 无 DDL 权限）。生产迁移的备份、执行顺序、核对与回退见 **[deploy/MIGRATION-task-scope.md](deploy/MIGRATION-task-scope.md)**。
 
 验证：
 
@@ -276,7 +280,8 @@ npm run preview
 ## 已验证
 
 - **数据库（Docker）**：`docker compose up -d mysql` 按 `00–12` 脚本完成初始化，容器 `worktrace-mysql`（MySQL 8.4.13）`healthy`；6 张表（`sys_user`、`biz_task`、`biz_task_log`、`biz_report`、`SPRING_SESSION` ×2）引擎/排序规则一致、时区表可用（`CONVERT_TZ` 返回 `+08:00`）、`wt_app`@`%` 权限正确。
-- **后端**：`mvn compile` / `mvn clean package` 均通过（当前无单元测试，`src/test` 为空）；Docker `backend` 容器运行，任务 / 跟进记录 / 报告接口可用。
+- **本轮回归**：`InsightServiceTest` 19 项 + `TaskServiceTest` 20 项单元测试通过；`TaskScopeTransactionTest` 3 项在独立临时 MySQL 容器中通过，覆盖整树迁移、子任务拒绝、真实 UPDATE 后异常回滚。运行方法见 [后端测试说明](server/src/test/README.md)。前端重点任务 11 项、范围切换 10 项测试及构建通过，范围测试直接覆盖组件的创建晚返回与切换行为。
+- **任务双范围（本地实测）**：`14_task_scope.sql` 幂等执行两遍（重复列跳过、后建 PERSONAL 行不被改回 COMPANY、行数不变）；端到端——建 COMPANY 父子、子任务继承、跨范围挂接 400、`PUT /scope` 整树迁移 `migrated=2` 后两范围列表正确、重复迁移幂等 `migrated=0`、普通 update 改范围 400、`scroll`/`page` 非法范围 400、跨用户迁移 404。
 - **前端**：`npm run type-check`、`npm run build` 均通过（build 14s 级，仅体积提示无报错）。
 - **任务模块端到端（本地浏览器实测）**：登录守卫、树形层级、行内编辑按 diff 回写、进度滑块拖动 / 满格联动完成、完成时间打戳与清空、父任务状态手动修改不被子任务派生覆盖、子任务全完成父任务自动完成、跟进记录时间线增删，均验证通过；树形三层缩进与自制展开箭头（含深层）、1280 小屏自动收列无横向滚动，线上实测通过。
 - **首页 / AI 洞察 / 重点标记端到端（线上实测）**：KPI 与图表真数据、ICU 农历问候、AI 洞察生成与缓存命中（空 key 降级 RULES 实测）、设重点 → 首页重点任务卡可见 → 取消即消失（按计划日期取 3 条、空日期排后），均验证通过。
@@ -287,6 +292,6 @@ npm run preview
 2. `@Idempotent` 注解与切面已就绪，业务接口暂未挂载（当前提交场景手工防重足够，需要时在 Controller 方法上加注解即可）。
 3. ~~「退出登录」只清前端登录态~~ → 已有服务端登出：`POST /api/auth/logout` 使会话失效并清 Cookie；登录/注册成功会轮换 Session ID（会话固定防护）；会话 7 天过期。
 4. 数据库从设计稿 19 张裁剪至 6 张（`12_drop_unused.sql`，线上已于 2026-11-05 同步删除）；被裁表的 DDL 仍保留在 `02–08` 分片中，未来实现某功能时把该表从 `12` 的 `DROP` 列表移除即可。
-5. `biz_task_log` 与 `biz_task` 的 `parent_id` / `category` / `finish_time` / `progress` / `is_key` 为后加能力：全新库由 `11_biz_tables.sql` 直接建全，**存量库需执行该文件头部注释中的 `ALTER`**；`is_key` 另有幂等脚本 `13_task_is_key.sql` 可直接跑。
+5. `biz_task_log` 与 `biz_task` 的 `parent_id` / `category` / `finish_time` / `progress` / `is_key` / `task_scope` 为后加能力：全新库由 `11_biz_tables.sql` 直接建全，**存量库需执行该文件头部注释中的 `ALTER`**；`is_key`、`task_scope` 另有幂等脚本 `13_task_is_key.sql`、`14_task_scope.sql` 可直接跑（14 需 root/DBA，生产步骤见 `deploy/MIGRATION-task-scope.md`）。
 6. Element Plus 全量注册，主包 `index` 约 1.2MB（gzip 约 390KB，含 EP 全量组件与样式），构建有「>500KB」体积提示但成功；在意体积可改按需引入或 `manualChunks` 分包。
 7. 演示账号 `admin/admin123` 为明文比对（登录联调用），生产必须改存 BCrypt 哈希并替换密码。

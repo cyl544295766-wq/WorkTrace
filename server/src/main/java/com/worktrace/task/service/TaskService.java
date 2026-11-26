@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.worktrace.common.api.Result;
 import com.worktrace.common.exception.BizException;
+import com.worktrace.task.TaskScope;
 import com.worktrace.task.dto.TaskCreateReq;
 import com.worktrace.task.dto.TaskPageReq;
 import com.worktrace.task.dto.TaskScrollPage;
@@ -16,6 +17,7 @@ import com.worktrace.task.entity.BizTaskLog;
 import com.worktrace.task.mapper.BizTaskLogMapper;
 import com.worktrace.task.mapper.BizTaskMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayDeque;
@@ -29,6 +31,10 @@ import java.util.Set;
  *
  * <p>核心约束：所有读写都以 <b>user_id（登录会话用户）</b> 为过滤条件 —— 增删改查均带
  * {@code .eq(BizTask::getUserId, userId)}，多账号数据互不可见，且不写死任何 userId。
+ *
+ * <p>任务范围（task_scope）：查询按范围过滤；子任务创建时强制继承父任务范围；
+ * 普通更新不改范围（传入不同值 400）；范围变更只能整棵子树迁移（事务保证一致）。
+ * 范围只是当前用户内部的分组，user_id 隔离不变。
  */
 @Service
 public class TaskService {
@@ -48,7 +54,7 @@ public class TaskService {
     /** 默认分类（前端未传时） */
     private static final String DEFAULT_CATEGORY = "OTHER";
 
-    /** 新增任务，归属会话用户；parentId 非空时校验父任务归属，非法则 400 */
+    /** 新增任务，归属会话用户；parentId 非空时校验父任务归属与范围，非法则 400 */
     public BizTask create(Long userId, TaskCreateReq req) {
         BizTask task = new BizTask();
         task.setUserId(userId);
@@ -65,14 +71,25 @@ public class TaskService {
                 ? DEFAULT_CATEGORY : req.category());
         task.setIsKey(req.isKey() == null ? 0 : req.isKey()); // 重点标记，默认普通
 
-        // 层级：父任务必须存在且属于当前用户（防把子任务挂到别人名下）
+        // 层级：父任务必须存在且属于当前用户（防把子任务挂到别人名下）；
+        // 子任务强制继承父任务范围——显式传入不一致的范围一律 400，禁止跨范围挂接。
         if (req.parentId() != null) {
             BizTask parent = bizTaskMapper.selectOne(
                     wrapsOwned(userId).eq(BizTask::getId, req.parentId()));
             if (parent == null) {
                 throw new BizException(Result.BAD_REQUEST, "父任务不存在或无权操作");
             }
+            String parentScope = normalizeScope(parent.getTaskScope());
+            if (req.taskScope() != null && !req.taskScope().isBlank()
+                    && !parentScope.equals(req.taskScope())) {
+                throw new BizException(Result.BAD_REQUEST,
+                        "子任务范围必须与父任务一致，不允许跨范围挂接父子任务");
+            }
             task.setParentId(req.parentId());
+            task.setTaskScope(parentScope); // 继承父任务范围
+        } else {
+            // 顶层任务：用请求范围，缺省 COMPANY（旧客户端不传也按公司任务处理）
+            task.setTaskScope(TaskScope.normalize(req.taskScope()));
         }
 
         LocalDateTime now = LocalDateTime.now();
@@ -81,6 +98,11 @@ public class TaskService {
 
         bizTaskMapper.insert(task);
         return task;
+    }
+
+    /** 历史行 task_scope 可能为 null（迁移前数据），统一按 COMPANY 解释 */
+    private static String normalizeScope(String scope) {
+        return scope == null || scope.isBlank() ? TaskScope.DEFAULT : scope;
     }
 
     /**
@@ -140,6 +162,13 @@ public class TaskService {
             return null;
         }
 
+        // 普通更新不改范围：未传 taskScope 保留原值（upd 不设该字段，MP NOT_NULL 策略不写入）；
+        // 传入与原值不同的范围直接 400 —— 范围变更必须整棵子树迁移，防止个人任务被改回公司任务
+        if (req.taskScope() != null && !req.taskScope().equals(normalizeScope(old.getTaskScope()))) {
+            throw new BizException(Result.BAD_REQUEST,
+                    "任务范围变更需整棵子树一起迁移，请使用范围迁移接口");
+        }
+
         BizTask upd = new BizTask();
         upd.setTitle(req.title());
         upd.setContent(req.content());
@@ -180,9 +209,9 @@ public class TaskService {
     private static final int MAX_PAGE_NUMBER = 1000;
 
     /**
-     * 分页查询（仅本人 + 状态/日期范围筛选）。
+     * 分页查询（仅本人 + 范围 + 状态/日期范围筛选）。
      * 非法页码/页大小一律钳制处理（不报错）：page 钳到 1-1000，size 钳到 1-500（≤0 回退默认 10），
-     * 非数字参数由 Spring 类型转换统一 400。
+     * 非数字参数由 Spring 类型转换统一 400；范围缺省 COMPANY、非法值 400。
      * 排序 create_time DESC, id DESC：id 决序保证同秒创建的任务跨页顺序稳定（offset 分页不重不漏的前提）。
      */
     public Page<BizTask> page(Long userId, TaskPageReq req) {
@@ -191,6 +220,7 @@ public class TaskService {
         Page<BizTask> page = new Page<>(current, size);
 
         LambdaQueryWrapper<BizTask> wrapper = wrapsOwned(userId)
+                .eq(BizTask::getTaskScope, TaskScope.normalize(req.taskScope()))
                 .eq(req.status() != null, BizTask::getStatus, req.status())
                 .ge(req.startDate() != null, BizTask::getPlanDate, req.startDate())
                 .le(req.endDate() != null, BizTask::getPlanDate, req.endDate())
@@ -216,7 +246,8 @@ public class TaskService {
             throw new BizException(400, "分页游标参数不完整：cursorTime 与 cursorId 必须同时提供");
         }
 
-        LambdaQueryWrapper<BizTask> wrapper = wrapsOwned(userId);
+        LambdaQueryWrapper<BizTask> wrapper = wrapsOwned(userId)
+                .eq(BizTask::getTaskScope, TaskScope.normalize(req.taskScope()));
         if (hasCursor) {
             LocalDateTime t = req.cursorTime();
             Long cid = req.cursorId();
@@ -240,6 +271,57 @@ public class TaskService {
                 more,
                 last == null ? null : last.getCreateTime(),
                 last == null ? null : last.getId());
+    }
+
+    /**
+     * 整棵子树范围迁移：顶层任务及其全部后代一起改范围，子任务不能单独跨范围。
+     *
+     * <p>事务保证成功或失败一致（BFS 读 + 单条 UPDATE 在同一事务内；UPDATE 单语句本身原子）。
+     * userId 过滤贯穿 BFS 与 UPDATE，跨用户 id 查不到也不会被改。
+     *
+     * @param id          被迁移的顶层任务 id；直接传入子任务 id 返回 400
+     * @param targetScope 目标范围（已校验合法）
+     * @return 实际更新行数；已是目标范围返回 0（幂等）
+     * @throws BizException(404) 任务不存在或非本人
+     */
+    @Transactional
+    public int migrateScope(Long userId, Long id, String targetScope) {
+        // 目标范围校验放在最前：非法值在任何查询/写入之前 400（Controller @Pattern 之外的纵深防御）
+        String scope = TaskScope.normalize(targetScope);
+        BizTask target = bizTaskMapper.selectOne(wrapsOwned(userId).eq(BizTask::getId, id));
+        if (target == null) {
+            throw new BizException(Result.NOT_FOUND, "任务不存在或无权操作");
+        }
+        if (target.getParentId() != null) {
+            throw new BizException(Result.BAD_REQUEST,
+                    "子任务不能单独调整范围，请迁移所属顶层任务及其全部子任务");
+        }
+        if (scope.equals(normalizeScope(target.getTaskScope()))) {
+            return 0; // 已在目标范围：幂等 no-op
+        }
+
+        // BFS 收集整棵子树（与 delete 同一套逐层推进 + Set 防脏数据成环）
+        Set<Long> ids = new HashSet<>();
+        ids.add(id);
+        Deque<Long> frontier = new ArrayDeque<>();
+        frontier.add(id);
+        while (!frontier.isEmpty()) {
+            List<BizTask> children = bizTaskMapper.selectList(
+                    wrapsOwned(userId).in(BizTask::getParentId, frontier));
+            frontier.clear();
+            for (BizTask child : children) {
+                if (ids.add(child.getId())) {
+                    frontier.add(child.getId());
+                }
+            }
+        }
+
+        BizTask upd = new BizTask();
+        upd.setTaskScope(scope);
+        upd.setUpdateTime(LocalDateTime.now());
+        return bizTaskMapper.update(upd, Wrappers.<BizTask>lambdaUpdate()
+                .eq(BizTask::getUserId, userId)
+                .in(BizTask::getId, ids));
     }
 
     /** 归属过滤条件（user_id = 当前会话用户） */

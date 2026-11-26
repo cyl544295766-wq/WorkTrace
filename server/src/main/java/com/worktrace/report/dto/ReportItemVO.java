@@ -9,6 +9,7 @@ import java.time.LocalDateTime;
  *
  * @param id         报告 id
  * @param reportType DAILY/WEEKLY/MONTHLY
+ * @param taskScope  生成范围 COMPANY/PERSONAL（历史报告统一为 COMPANY）
  * @param startDate  统计开始日期
  * @param endDate    统计结束日期
  * @param aiModel    生成模型
@@ -18,6 +19,7 @@ import java.time.LocalDateTime;
 public record ReportItemVO(
         Long id,
         String reportType,
+        String taskScope,
         LocalDate startDate,
         LocalDate endDate,
         String aiModel,

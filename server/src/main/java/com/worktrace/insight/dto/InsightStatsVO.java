@@ -2,7 +2,11 @@ package com.worktrace.insight.dto;
 
 import java.time.LocalDate;
 
-/** 洞察使用的统计快照；前端据此拒绝与当前任务卡片不一致的旧文案。待处理包含已延期。 */
+/**
+ * 洞察使用的统计快照；前端据此拒绝与当前任务卡片不一致的旧文案。待处理包含已延期。
+ *
+ * @param scope 统计范围 COMPANY/PERSONAL——前端核对范围一致，防止公司文案配个人卡片展示
+ */
 public record InsightStatsVO(
         LocalDate date,
         int total,
@@ -14,6 +18,7 @@ public record InsightStatsVO(
         int highPending,
         int todayNew,
         int keyTasks,
-        int completionRate
+        int completionRate,
+        String scope
 ) {
 }

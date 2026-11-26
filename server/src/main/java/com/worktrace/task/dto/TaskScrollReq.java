@@ -15,6 +15,8 @@ public record TaskScrollReq(
         /** 上一页最后一条的 id，首页为 null */
         Long cursorId,
         /** 单页条数，服务端钳制 1-500 */
-        int size
+        int size,
+        /** 任务范围 COMPANY/PERSONAL，空=COMPANY；游标排序不变，仅追加范围过滤 */
+        String taskScope
 ) {
 }

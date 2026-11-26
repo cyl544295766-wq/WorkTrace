@@ -19,9 +19,10 @@ import {
   TrendCharts,
   VideoPlay,
 } from '@element-plus/icons-vue'
-import { fetchAllTaskRows } from '@/api/tasks'
+import { fetchAllTaskRows, SCOPE_COMPANY, SCOPE_OPTIONS, scopeLabel, type TaskScope } from '@/api/tasks'
 import { isInsightCurrent, type AiInsight } from '@/api/insights'
 import { buildFocusTasks } from '@/utils/focusTasks'
+import { createLatestGuard } from '@/utils/latestRequest'
 import { httpGet, httpPut } from '@/api/request'
 
 // ── 按需注册：折线 + 环形（饼） + 常用组件 + Canvas 渲染器 ──
@@ -64,22 +65,45 @@ const loading = ref(true)
 const loadFailed = ref(false)
 const loadErrorMsg = ref('') // 具体失败原因，进横幅文案（网络错误另有 request.ts toast）
 
+/* ── 任务范围：默认公司任务；KPI / 今日聚焦 / 图表 / AI 洞察全部按同一范围统计 ── */
+const taskScope = ref<TaskScope>(SCOPE_COMPANY)
+/** 最新请求守卫：快速切换范围时丢弃晚返回的旧范围响应，避免覆盖当前范围数据 */
+const loadGuard = createLatestGuard()
+
 async function loadTasks(): Promise<void> {
+  const seq = loadGuard.begin()
   loading.value = true
   try {
     // 游标分页拉全量（无页数上限、按 id 去重），统计与重点任务卡口径更完整
-    tasks.value = await fetchAllTaskRows()
+    const rows = await fetchAllTaskRows(taskScope.value)
+    if (!loadGuard.isCurrent(seq)) return // 过期响应：范围已切换，丢弃（新请求负责收尾 loading）
+    tasks.value = rows
     loadFailed.value = false
     loadErrorMsg.value = ''
   } catch (e) {
+    if (!loadGuard.isCurrent(seq)) return // 过期请求的失败不污染新范围状态
     // 错误 toast 由 request.ts 统一处理；这里再挂失败横幅——
     // 加载失败时 KPI 全是 0，必须明示这是错误态而非真实数据
     tasks.value = []
     loadFailed.value = true
     loadErrorMsg.value = e instanceof Error && e.message ? e.message : ''
   } finally {
-    loading.value = false
+    if (loadGuard.isCurrent(seq)) loading.value = false
   }
+}
+
+/** 切换公司/个人：任务与洞察一起按新范围重载（洞察带范围参数，服务端缓存按范围隔离） */
+async function switchScope(next: TaskScope): Promise<void> {
+  if (next === taskScope.value) return
+  taskScope.value = next
+  aiInsight.value = null // 旧范围文案立即下架，避免与新范围卡片并列
+  void loadTasks()
+  void loadInsight()
+}
+
+/** el-segmented 更新回调：只接受合法范围值 */
+function onScopeChange(v: unknown): void {
+  if (v === 'COMPANY' || v === 'PERSONAL') void switchScope(v)
 }
 onMounted(() => {
   void loadTasks()
@@ -608,7 +632,8 @@ const fallbackInsight = computed(() => {
 const aiInsight = ref<AiInsight | null>(null)
 async function loadInsight(): Promise<void> {
   try {
-    aiInsight.value = await httpGet<AiInsight>('/insights/work')
+    // 带范围请求：服务端统计与缓存按范围隔离，公司/个人文案不串用
+    aiInsight.value = await httpGet<AiInsight>('/insights/work', { taskScope: taskScope.value })
   } catch {
     // 业务失败后端已降级 RULES 恒 200；此处多为网络异常，保留本地兜底
   }
@@ -620,19 +645,24 @@ async function refreshInsight(): Promise<void> {
   if (insightRefreshing.value) return
   insightRefreshing.value = true
   try {
-    aiInsight.value = await httpGet<AiInsight>('/insights/work', { refresh: true })
+    aiInsight.value = await httpGet<AiInsight>('/insights/work', {
+      refresh: true,
+      taskScope: taskScope.value,
+    })
   } catch {
     // request.ts 已统一弹出错误提示；面板保持原文案
   } finally {
     insightRefreshing.value = false
   }
 }
-/** 仅展示与当前卡片一致的洞察；用户勾选任务后，旧缓存文案也立即退出展示。 */
+/** 仅展示与当前范围、当前卡片一致的洞察；范围或统计变化时旧文案立即退出展示。 */
 const activeInsight = computed(() => {
   if (loading.value || loadFailed.value) {
     return { headline: '任务数据尚未就绪', para: '任务统计加载完成后再展示洞察。', advice: '等待加载或重试', source: 'RULES' as const }
   }
-  return isInsightCurrent(aiInsight.value, tasks.value, now.value) ? aiInsight.value! : fallbackInsight.value
+  return isInsightCurrent(aiInsight.value, tasks.value, taskScope.value, now.value)
+    ? aiInsight.value!
+    : fallbackInsight.value
 })
 
 /** 洞察面板的关键数据条：全部由已加载任务派生（无新增接口），用于分层展示与重点着色 */
@@ -870,6 +900,16 @@ onBeforeUnmount(() => {
       </template>
     </el-alert>
 
+    <!-- 范围切换：KPI / 今日聚焦 / 图表 / AI 洞察全部按当前范围统计，默认公司任务 -->
+    <section class="scope-bar" aria-label="任务范围">
+      <el-segmented
+        :model-value="taskScope"
+        :options="SCOPE_OPTIONS"
+        @update:model-value="onScopeChange"
+      />
+      <span class="scope-bar__hint">当前范围：{{ scopeLabel(taskScope) }}</span>
+    </section>
+
     <!-- KPI 统计卡 -->
     <section class="kpi-row" aria-label="任务统计">
       <article
@@ -979,7 +1019,9 @@ onBeforeUnmount(() => {
         <div class="card__head insight-card__head">
           <div>
             <h2 class="card__title"><span class="title-bar title-bar--teal" />AI 工作洞察</h2>
-            <p class="insight-source">{{ activeInsight.source === 'AI' ? '基于当前任务的分析' : '基于当前任务的规则建议' }}</p>
+            <p class="insight-source">
+              {{ activeInsight.source === 'AI' ? `基于${scopeLabel(taskScope)}的分析` : `基于${scopeLabel(taskScope)}的规则建议` }}
+            </p>
           </div>
           <button
             type="button"
@@ -1634,6 +1676,23 @@ onBeforeUnmount(() => {
 
 .load-fail-alert__retry {
   margin-left: 12px;
+}
+
+/* ── 范围切换条（公司 / 个人，默认公司任务；下方 KPI 与洞察同源统计） ── */
+.scope-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scope-bar :deep(.el-segmented) {
+  --el-segmented-bg-color: rgba(255, 255, 255, 0.72);
+}
+
+.scope-bar__hint {
+  color: var(--wt-muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 /* ── KPI 3D Floating Cards ── */

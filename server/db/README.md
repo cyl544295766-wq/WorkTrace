@@ -1,6 +1,6 @@
 # WorkTrace 数据库脚本（MySQL 8）
 
-本目录是数据库 DDL 的唯一来源：`01`–`08` 为 T02 交付分片，`10`–`13` 为功能落地后的补充分片
+本目录是数据库 DDL 的唯一来源：`01`–`08` 为 T02 交付分片，`10`–`14` 为功能落地后的补充分片
 （演示账号、业务表、裁剪未用表、幂等补列），按序号顺序在 **MySQL 8.0.20+** 实例上执行。
 分片只负责建库建表、系统 seed 与最小权限；业务数据由应用产生。
 
@@ -9,14 +9,17 @@
 > 全新环境由本目录分片初始化，存量环境升级时新增编号分片（如 `14_xxx.sql`）并按下方「存量库升级」执行。
 
 > **Docker 部署**：仓库根目录的 `docker-compose.yml` 会把本目录 `01`–`12` 自动挂载到
-> `/docker-entrypoint-initdb.d`（`13` 面向存量库、不进容器初始化序列），首次 `docker compose up -d` 时按序执行，无需手动运行。
+> `/docker-entrypoint-initdb.d`（`13`、`14` 面向存量库、不进容器初始化序列），首次 `docker compose up -d` 时按序执行，无需手动运行。
 > 另有两个容器专用脚本（不属于本目录分片）：`docker/mysql-init/00_load_tz.sh`（加载时区表）
 > 与 `09_docker_app_user.sql`（把 `wt_app` 主机从 `127.0.0.1` 改为 `%`，适配端口映射访问）。
 > 本机直接执行时不需要这两个脚本。
 
 > **存量库升级**：`CREATE TABLE IF NOT EXISTS` 对已存在的表不生效。已建过 `biz_task` 的
 > 实例需单独执行 `11_biz_tables.sql` 头部注释中的 `ALTER`（补 `parent_id`、`category`、`finish_time`、`progress` 列），
-> `biz_task_log` 若未建则单独执行其 `CREATE TABLE`；`is_key` 列直接跑幂等脚本 `13_task_is_key.sql`（重复执行安全）。
+> `biz_task_log` 若未建则单独执行其 `CREATE TABLE`；`is_key` 列直接跑幂等脚本 `13_task_is_key.sql`，
+> `task_scope` 列直接跑幂等脚本 `14_task_scope.sql`（两者重复执行安全）。
+> **`14` 含 `ALTER TABLE`，需要 root/DBA 账号**——`wt_app` 只有 DML 权限，执行会报 `ERROR 1142: ALTER command denied`。
+> 生产迁移的备份 / 执行顺序 / 核对 / 回退见 `deploy/MIGRATION-task-scope.md`。
 
 ## 1. 执行顺序
 
@@ -35,6 +38,7 @@
 | 11 | `11_biz_tables.sql` | `biz_task`（含 `is_key`、`finish_time`、`progress`）、`biz_report`、`biz_task_log` 及 `wt_app` 授权；头部含存量库 `ALTER` 注释 |
 | 12 | `12_drop_unused.sql` | 裁剪 `02`–`08` 中未实现的 14 张表，使全新初始化与线上一致（最终在用 6 张：`sys_user`、`biz_task`、`biz_task_log`、`biz_report`、`SPRING_SESSION` ×2） |
 | 13 | `13_task_is_key.sql` | 幂等补 `biz_task.is_key` 重点标记列（列已存在则跳过；全新库由 11 直接建出，本脚本面向存量库） |
+| 14 | `14_task_scope.sql` | 幂等补 `biz_task.task_scope` 与 `biz_report.task_scope`（公司/个人双范围，`VARCHAR(16) NOT NULL DEFAULT 'COMPANY'`；列已存在则跳过，存量行归 COMPANY，**绝不全表回写**——迁移后新建的 PERSONAL 不会被改回；全新库由 11 直接建出。**含 ALTER，需 root/DBA**） |
 
 全新实例上依次执行：
 
@@ -52,6 +56,7 @@ mysql --default-character-set=utf8mb4 -u root -p < 10_sys_user.sql
 mysql --default-character-set=utf8mb4 -u root -p < 11_biz_tables.sql
 mysql --default-character-set=utf8mb4 -u root -p < 12_drop_unused.sql
 mysql --default-character-set=utf8mb4 -u root -p < 13_task_is_key.sql
+mysql --default-character-set=utf8mb4 -u root -p < 14_task_scope.sql   # 含 ALTER，用 root
 ```
 
 也可以在 `mysql` 客户端内执行 `SOURCE 01_user_session.sql;`，依此类推。
@@ -105,7 +110,7 @@ SELECT @@version, @@sql_mode, @@lower_case_table_names,
 | 用户 | `wt_app` |
 | 主机 | `127.0.0.1` |
 | 密码 | `WorkTrace_App_2026!`（仅开发默认值，生产必须替换） |
-| 业务表 | `SELECT, INSERT, UPDATE, DELETE` |
+| 业务表 | `SELECT, INSERT, UPDATE, DELETE`（**无 DDL**——补列脚本 13/14 必须用 root/DBA 执行） |
 | `audit_log` | `SELECT, INSERT` |
 | Spring Session 两张表 | `SELECT, INSERT, UPDATE, DELETE` |
 
@@ -166,6 +171,27 @@ SELECT ROW_COUNT();
 
 第 5 条要求 MySQL 8.0.20+ 的 `AS new` 别名语法。`ROW_COUNT()` 第二次为 `2` 表示走了
 `ON DUPLICATE KEY UPDATE`，不是静默插入重复行。
+
+### task_scope（`14_task_scope.sql`）专项核对
+
+```sql
+-- 列已存在且默认 COMPANY（两张表各一行）
+SELECT table_name, column_name, column_default, is_nullable
+FROM information_schema.columns
+WHERE table_schema='work_system' AND column_name='task_scope';
+
+-- 取值只允许 COMPANY/PERSONAL，非法值 0 行
+SELECT task_scope, COUNT(*) FROM biz_task   GROUP BY task_scope;
+SELECT task_scope, COUNT(*) FROM biz_report GROUP BY task_scope;
+SELECT COUNT(*) FROM biz_task   WHERE task_scope NOT IN ('COMPANY','PERSONAL');
+SELECT COUNT(*) FROM biz_report WHERE task_scope NOT IN ('COMPANY','PERSONAL');
+
+-- 首次迁移后存量任务全部 COMPANY；行数与迁移前一致（父子/日志关联不变）
+SELECT (SELECT COUNT(*) FROM biz_task) AS tasks, (SELECT COUNT(*) FROM biz_task_log) AS logs;
+```
+
+幂等性：重复执行 `14` 两列均跳过，且**不会**把已存在的 `PERSONAL` 改回 `COMPANY`
+（本地实测：插入 PERSONAL 行后重跑，值与行数均不变）。唯一 UPDATE 只修 `task_scope=''`。
 
 ## 7. 文档与实现差异
 

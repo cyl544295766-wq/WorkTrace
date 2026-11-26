@@ -8,6 +8,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.worktrace.insight.dto.InsightVO;
 import com.worktrace.insight.dto.InsightStatsVO;
+import com.worktrace.task.TaskScope;
 import com.worktrace.task.entity.BizTask;
 import com.worktrace.task.mapper.BizTaskMapper;
 import org.slf4j.Logger;
@@ -39,9 +40,10 @@ import java.util.regex.Pattern;
  * {@code chat/completions}），独立实现不与报告生成共用类，配置复用
  * {@code ai.base-url / ai.api-key / ai.model}，零新增配置。
  *
- * <p>缓存：Caffeine 按 userId 缓存 <b>AI</b> 结果 30 分钟，命中前检查当前统计和协议版本；
- * RULES 结果不缓存，下次请求自动重试 AI。首页「换一条」走 {@code refresh=true} 绕过缓存
- * 重新生成（成功后回写缓存）。
+ * <p>缓存：Caffeine 按 <b>userId + 任务范围</b> 缓存 <b>AI</b> 结果 30 分钟，命中前检查当前统计
+ * 和协议版本；RULES 结果不缓存，下次请求自动重试 AI。首页「换一条」走 {@code refresh=true}
+ * 绕过缓存重新生成（成功后回写缓存）。统计、分类、样例与响应快照都带范围，
+ * 公司任务与个人任务的文案/缓存互不串用。
  */
 @Service
 public class InsightService {
@@ -93,11 +95,16 @@ public class InsightService {
     @Value("${ai.model:deepseek-chat}")
     private String model;
 
-    /** 仅保存经过校验的文案；统计或协议变化即失效，避免旧数据在 30 分钟内继续显示。 */
-    private final Cache<Long, CachedInsight> cache = Caffeine.newBuilder()
+    /** 仅保存经过校验的文案；统计、范围或协议变化即失效，避免旧数据在 30 分钟内继续显示。 */
+    private final Cache<String, CachedInsight> cache = Caffeine.newBuilder()
             .maximumSize(200)
             .expireAfterWrite(Duration.ofMinutes(30))
             .build();
+
+    /** 缓存键：userId + 范围——公司/个人文案与统计互不串用 */
+    private static String cacheKey(Long userId, String scope) {
+        return userId + "|" + scope;
+    }
 
     public InsightService(BizTaskMapper bizTaskMapper, ObjectMapper objectMapper) {
         this.bizTaskMapper = bizTaskMapper;
@@ -114,35 +121,38 @@ public class InsightService {
     }
 
     /**
-     * 获取工作洞察：先统计并核对缓存上下文；未命中调用 AI，数值或格式校验失败直接降级。
+     * 获取工作洞察：先按范围统计并核对缓存上下文；未命中调用 AI，数值或格式校验失败直接降级。
      *
+     * @param scope   任务范围（COMPANY/PERSONAL），缺省 COMPANY
      * @param refresh true = 跳过缓存读取重新生成（首页「换一条」），成功后回写缓存
      */
-    public InsightVO getWorkInsight(Long userId, boolean refresh) {
-        Stats stats = loadStats(userId);
-        String context = buildPrompt(stats);
-        CachedInsight cached = cache.getIfPresent(userId);
+    public InsightVO getWorkInsight(Long userId, String scope, boolean refresh) {
+        String taskScope = TaskScope.normalize(scope);
+        Stats stats = loadStats(userId, taskScope);
+        String context = buildPrompt(stats, taskScope);
+        String key = cacheKey(userId, taskScope);
+        CachedInsight cached = cache.getIfPresent(key);
         if (!refresh && cached != null && cached.version() == INSIGHT_VERSION
                 && cached.context().equals(context)) {
             return cached.value();
         }
         // 包括主动刷新失败的情形，旧缓存也不能在下次请求中再次出现。
-        cache.invalidate(userId);
+        cache.invalidate(key);
         if (stats.total == 0) {
-            return rulesInsight(stats); // 空态引导，不调 AI
+            return rulesInsight(stats, taskScope); // 空态引导，不调 AI
         }
 
         // 瞬时失败（网络抖动/超时）自动重试 1 次；仍失败才降级规则文案
         Exception lastError = null;
         for (int attempt = 1; attempt <= 2; attempt++) {
             try {
-                InsightVO vo = parseInsight(callChatModel(context), stats);
-                cache.put(userId, new CachedInsight(INSIGHT_VERSION, context, vo));
+                InsightVO vo = parseInsight(callChatModel(context), stats, taskScope);
+                cache.put(key, new CachedInsight(INSIGHT_VERSION, context, vo));
                 return vo;
             } catch (InvalidInsightException | JsonProcessingException e) {
                 // 格式/数值不可信时立即兜底，不为同一错误文案再次调用模型。
                 log.warn("AI 洞察内容校验失败，使用统计规则文案: {}", e.getMessage());
-                return rulesInsight(stats);
+                return rulesInsight(stats, taskScope);
             } catch (Exception e) {
                 lastError = e;
                 if (attempt == 1) {
@@ -157,7 +167,7 @@ public class InsightService {
         }
         log.warn("AI 洞察生成失败（含 1 次重试），降级为规则文案: {}",
                 lastError == null ? "unknown" : lastError.getMessage());
-        return rulesInsight(stats);
+        return rulesInsight(stats, taskScope);
     }
 
     /* ==================== 统计聚合（数据库聚合，替代原全量行加载 + 内存统计） ==================== */
@@ -196,7 +206,7 @@ public class InsightService {
      * 聚合表达式——与原 Java 内存版用同一时钟、同一比较语义，统计口径不变；
      * 值均为系统时钟生成，无用户输入，不存在注入面。
      */
-    private Stats loadStats(Long userId) {
+    private Stats loadStats(Long userId, String scope) {
         Stats s = new Stats();
         LocalDate today = LocalDate.now();
         s.date = today;
@@ -229,7 +239,8 @@ public class InsightService {
                         "SUM(CASE WHEN create_time >= " + d + " AND create_time < '"
                                 + today.plusDays(1) + "' THEN 1 ELSE 0 END) AS today_new",
                         "COALESCE(SUM(progress), 0) AS progress_sum")
-                .eq("user_id", userId));
+                .eq("user_id", userId)
+                .eq("task_scope", scope));
         Map<String, Object> row = aggRows == null || aggRows.isEmpty() ? Map.of() : aggRows.get(0);
         if (row == null || row.isEmpty()) {
             return s; // 无任务（理论不可达：无 GROUP BY 的聚合恒返回一行）
@@ -256,6 +267,7 @@ public class InsightService {
                 .select("category", "COUNT(*) AS cnt",
                         "SUM(CASE WHEN status <> 2 THEN 1 ELSE 0 END) AS unfinished_cnt")
                 .eq("user_id", userId)
+                .eq("task_scope", scope)
                 .isNotNull("category")
                 .apply("TRIM(category) <> ''")
                 .groupBy("category")
@@ -271,6 +283,7 @@ public class InsightService {
         List<BizTask> samples = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
                 .select(BizTask::getTitle)
                 .eq(BizTask::getUserId, userId)
+                .eq(BizTask::getTaskScope, scope)
                 .ne(BizTask::getStatus, 2)
                 .isNotNull(BizTask::getTitle)
                 .apply("TRIM(title) <> ''")
@@ -297,10 +310,12 @@ public class InsightService {
 
     /* ==================== Prompt 与解析 ==================== */
 
-    /** 任务统计 → 结构化 Prompt */
-    private String buildPrompt(Stats s) {
+    /** 任务统计 → 结构化 Prompt（带范围，避免模型把公司与个人任务混为一谈） */
+    private String buildPrompt(Stats s, String scope) {
         StringBuilder sb = new StringBuilder();
-        sb.append("统计日期：").append(s.date).append("。以下各项均按当前用户全部任务节点统计。\n");
+        sb.append("统计日期：").append(s.date)
+                .append("，统计范围：").append(TaskScope.label(scope))
+                .append("。以下各项均按当前用户该范围内的任务节点统计。\n");
         sb.append("- 任务总数 ").append(s.total)
                 .append("，已完成 ").append(s.done)
                 .append("，未完成 ").append(s.total - s.done).append('\n');
@@ -376,7 +391,7 @@ public class InsightService {
     }
 
     /** 模型只提供定性解释；任何模型生成的数量一律拒绝，由服务端的统计事实替代。 */
-    private InsightVO parseInsight(String content, Stats stats) throws JsonProcessingException {
+    private InsightVO parseInsight(String content, Stats stats, String scope) throws JsonProcessingException {
         String s = content.trim();
         if (s.startsWith("```")) {
             s = s.replaceFirst("^```[a-zA-Z]*\\s*", "").replaceFirst("```\\s*$", "").trim();
@@ -394,7 +409,7 @@ public class InsightService {
                 ".*(全部完成|全部已完成|均已完成|没有未完成|没有待办|无待办|任务已清零).*")) {
             throw new InvalidInsightException("洞察与未完成统计矛盾");
         }
-        return insight(stats, headline, para, advice, InsightVO.SOURCE_AI);
+        return insight(stats, scope, headline, para, advice, InsightVO.SOURCE_AI);
     }
 
     private String qualitativeField(JsonNode node, String field, int maxLength) {
@@ -409,14 +424,14 @@ public class InsightService {
         return text;
     }
 
-    private InsightStatsVO snapshot(Stats s) {
+    private InsightStatsVO snapshot(Stats s, String scope) {
         return new InsightStatsVO(s.date, s.total, s.done, s.doing, s.todo + s.delayed,
                 s.total - s.done, s.overdue, s.highPending, s.todayNew, s.keyTasks,
-                s.total == 0 ? 0 : (int) Math.round(s.done * 100.0 / s.total));
+                s.total == 0 ? 0 : (int) Math.round(s.done * 100.0 / s.total), scope);
     }
 
     /** 服务端直接组装数字事实，模型文案从不参与数字填充或推算。 */
-    private InsightVO insight(Stats s, String headline, String explanation, String advice, String source) {
+    private InsightVO insight(Stats s, String scope, String headline, String explanation, String advice, String source) {
         String facts = "共" + s.total + "项，已完成" + s.done + "项，未完成" + (s.total - s.done) + "项。";
         if (s.overdue > 0) {
             facts += "逾期" + s.overdue + "项。";
@@ -424,29 +439,29 @@ public class InsightService {
         if (s.highPending > 0) {
             facts += "高优未完成" + s.highPending + "项。";
         }
-        return new InsightVO(headline, facts + explanation, advice, source, snapshot(s));
+        return new InsightVO(headline, facts + explanation, advice, source, snapshot(s, scope));
     }
 
     /* ==================== 基于同一统计快照的规则兜底 ==================== */
 
-    private InsightVO rulesInsight(Stats s) {
+    private InsightVO rulesInsight(Stats s, String scope) {
         if (s.total == 0) {
-            return insight(s, "从第一件任务开始吧", "还没有任务记录，可以从创建任务开始。",
+            return insight(s, scope, "从第一件任务开始吧", "还没有任务记录，可以从创建任务开始。",
                     "创建任务，记录工作轨迹", InsightVO.SOURCE_RULES);
         }
         if (s.done == s.total) {
-            return insight(s, "任务已全部完成", "可以整理本阶段成果，再安排后续计划。",
+            return insight(s, scope, "任务已全部完成", "可以整理本阶段成果，再安排后续计划。",
                     "整理成果，规划后续工作", InsightVO.SOURCE_RULES);
         }
         if (s.overdue > 0) {
-            return insight(s, "优先处理逾期任务", "先核对逾期原因，再安排后续工作。",
+            return insight(s, scope, "优先处理逾期任务", "先核对逾期原因，再安排后续工作。",
                     "核对逾期事项并明确处理计划", InsightVO.SOURCE_RULES);
         }
         if (s.highPending > 0) {
-            return insight(s, "关注高优先级任务", "优先推进高优任务，并为临近到期事项预留时间。",
+            return insight(s, scope, "关注高优先级任务", "优先推进高优任务，并为临近到期事项预留时间。",
                     "先推进高优任务，再安排其他事项", InsightVO.SOURCE_RULES);
         }
-        return insight(s, "按优先级稳步推进", "根据截止日期和实际进度安排后续工作。",
+        return insight(s, scope, "按优先级稳步推进", "根据截止日期和实际进度安排后续工作。",
                 "确认待办事项的下一步行动", InsightVO.SOURCE_RULES);
     }
 }

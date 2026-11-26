@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
+import com.worktrace.common.api.Result;
+import com.worktrace.common.exception.BizException;
 import com.worktrace.insight.dto.InsightVO;
 import com.worktrace.task.entity.BizTask;
 import com.worktrace.task.mapper.BizTaskMapper;
@@ -78,6 +80,7 @@ class InsightServiceTest {
 
     private Fixture fixtureFor(AbstractWrapper<?, ?, ?> w) {
         assertTrue(w.getSqlSegment().contains("user_id"), "每条统计/样例查询必须按用户过滤");
+        assertTrue(w.getSqlSegment().contains("task_scope"), "每条统计/样例查询必须按任务范围过滤");
         Long userId = w.getParamNameValuePairs().values().stream().filter(Long.class::isInstance)
                 .map(Long.class::cast).findFirst().orElseThrow();
         queriedUsers.add(userId);
@@ -107,7 +110,7 @@ class InsightServiceTest {
         }).andRespond(withSuccess(response("优先推进关键事项", "先核对逾期原因，再安排高优任务",
                 "明确负责人与处理计划"), MediaType.APPLICATION_JSON));
 
-        InsightVO result = service.getWorkInsight(1L, false);
+        InsightVO result = service.getWorkInsight(1L, "COMPANY", false);
         assertEquals(InsightVO.SOURCE_AI, result.source());
         assertTrue(result.para().contains("共115项，已完成92项，未完成23项"));
         assertFalse(result.para().contains("110"));
@@ -125,7 +128,7 @@ class InsightServiceTest {
     void rejectsModelQuantitiesInsteadOfReusingCategoryOrWrongMetric(String text) throws Exception {
         model.expect(requestTo(URL)).andRespond(withSuccess(response("需要关注工作节奏", text,
                 "优先处理逾期任务"), MediaType.APPLICATION_JSON));
-        InsightVO result = service.getWorkInsight(1L, false);
+        InsightVO result = service.getWorkInsight(1L, "COMPANY", false);
         assertEquals(InsightVO.SOURCE_RULES, result.source());
         assertTrue(result.para().contains("已完成92项，未完成23项"));
         assertTrue(result.para().contains("逾期11项"));
@@ -137,7 +140,7 @@ class InsightServiceTest {
     void checksQuantitiesInHeadlineAndAdviceToo() throws Exception {
         model.expect(requestTo(URL)).andRespond(withSuccess(response("还有110项待办", "请按优先级推进工作",
                 "先处理110项任务"), MediaType.APPLICATION_JSON));
-        assertEquals(InsightVO.SOURCE_RULES, service.getWorkInsight(1L, false).source());
+        assertEquals(InsightVO.SOURCE_RULES, service.getWorkInsight(1L, "COMPANY", false).source());
         model.verify();
     }
 
@@ -150,7 +153,7 @@ class InsightServiceTest {
         f.categoryUnfinished = 1;
         model.expect(requestTo(URL)).andRespond(withSuccess(response("需要关注工作节奏", "新增需求110条积压",
                 "优先核对待办事项"), MediaType.APPLICATION_JSON));
-        InsightVO result = service.getWorkInsight(1L, false);
+        InsightVO result = service.getWorkInsight(1L, "COMPANY", false);
         assertEquals(InsightVO.SOURCE_RULES, result.source());
         assertTrue(result.para().contains("已完成114项，未完成1项"));
         assertFalse(result.para().contains("积压"));
@@ -162,7 +165,7 @@ class InsightServiceTest {
     void malformedOrNonTextualOutputUsesRules(String content) throws Exception {
         String body = json.writeValueAsString(Map.of("choices", List.of(Map.of("message", Map.of("content", content)))));
         model.expect(requestTo(URL)).andRespond(withSuccess(body, MediaType.APPLICATION_JSON));
-        InsightVO result = service.getWorkInsight(1L, false);
+        InsightVO result = service.getWorkInsight(1L, "COMPANY", false);
         assertEquals(InsightVO.SOURCE_RULES, result.source());
         assertTrue(result.para().contains("已完成92项，未完成23项"));
         model.verify();
@@ -175,7 +178,7 @@ class InsightServiceTest {
         f.doing = f.delayed = f.overdue = f.highPending = f.categoryUnfinished = 0;
         model.expect(requestTo(URL)).andRespond(withSuccess(response("需要关注任务积压", "仍有110项积压",
                 "优先清理积压任务"), MediaType.APPLICATION_JSON));
-        InsightVO result = service.getWorkInsight(1L, false);
+        InsightVO result = service.getWorkInsight(1L, "COMPANY", false);
         assertEquals(InsightVO.SOURCE_RULES, result.source());
         assertEquals("任务已全部完成", result.headline());
         assertTrue(result.para().contains("已完成115项，未完成0项"));
@@ -188,7 +191,7 @@ class InsightServiceTest {
     void emptyTasksNeverCallModel() {
         Fixture f = fixtures.get(1L);
         f.total = f.done = f.doing = f.delayed = f.overdue = f.highPending = f.todayNew = f.keyTasks = 0;
-        InsightVO result = service.getWorkInsight(1L, false);
+        InsightVO result = service.getWorkInsight(1L, "COMPANY", false);
         assertEquals(InsightVO.SOURCE_RULES, result.source());
         assertTrue(result.para().contains("共0项，已完成0项，未完成0项"));
         assertEquals(0, result.stats().completionRate());
@@ -199,15 +202,15 @@ class InsightServiceTest {
     void usesCacheOnlyWhileCurrentStatsMatch() throws Exception {
         expectValid();
         expectValid();
-        InsightVO first = service.getWorkInsight(1L, false);
-        assertSame(first, service.getWorkInsight(1L, false));
+        InsightVO first = service.getWorkInsight(1L, "COMPANY", false);
+        assertSame(first, service.getWorkInsight(1L, "COMPANY", false));
         Fixture f = fixtures.get(1L);
         f.done++;
         f.doing--;
-        InsightVO next = service.getWorkInsight(1L, false);
+        InsightVO next = service.getWorkInsight(1L, "COMPANY", false);
         assertNotSame(first, next);
         assertTrue(next.para().contains("已完成93项，未完成22项"));
-        assertSame(next, service.getWorkInsight(1L, false));
+        assertSame(next, service.getWorkInsight(1L, "COMPANY", false));
         model.verify();
     }
 
@@ -216,14 +219,34 @@ class InsightServiceTest {
         fixtures.put(2L, new Fixture());
         expectValid();
         expectValid();
-        InsightVO a = service.getWorkInsight(1L, false);
-        InsightVO b = service.getWorkInsight(2L, false);
+        InsightVO a = service.getWorkInsight(1L, "COMPANY", false);
+        InsightVO b = service.getWorkInsight(2L, "COMPANY", false);
         assertNotSame(a, b);
-        assertSame(a, service.getWorkInsight(1L, false));
-        assertSame(b, service.getWorkInsight(2L, false));
+        assertSame(a, service.getWorkInsight(1L, "COMPANY", false));
+        assertSame(b, service.getWorkInsight(2L, "COMPANY", false));
         assertTrue(queriedUsers.contains(1L));
         assertTrue(queriedUsers.contains(2L));
         model.verify();
+    }
+
+    @Test
+    void cachesDoNotCrossScopesEvenWithIdenticalStats() throws Exception {
+        // 同一用户、同一统计：范围进入 prompt 与缓存键，公司/个人各自独立调用与命中
+        // （MockRestServiceServer 要求先声明全部期望，再发请求）
+        expectValid();
+        expectValid();
+        InsightVO company = service.getWorkInsight(1L, "COMPANY", false);
+        InsightVO personal = service.getWorkInsight(1L, "PERSONAL", false);
+        assertNotSame(company, personal, "不同范围不得共用缓存文案");
+        assertSame(company, service.getWorkInsight(1L, "COMPANY", false));
+        assertSame(personal, service.getWorkInsight(1L, "PERSONAL", false));
+    }
+
+    @Test
+    void invalidScopeIsRejectedWithBadRequest() {
+        BizException e = assertThrows(BizException.class,
+                () -> service.getWorkInsight(1L, "SHARED", false));
+        assertEquals(Result.BAD_REQUEST, e.getCode());
     }
 
     @Test
@@ -232,9 +255,9 @@ class InsightServiceTest {
         model.expect(requestTo(URL)).andRespond(withSuccess(response("需要关注工作节奏", "积压110项任务",
                 "请优先处理逾期任务"), MediaType.APPLICATION_JSON));
         expectValid();
-        InsightVO first = service.getWorkInsight(1L, false);
-        assertEquals(InsightVO.SOURCE_RULES, service.getWorkInsight(1L, true).source());
-        InsightVO next = service.getWorkInsight(1L, false);
+        InsightVO first = service.getWorkInsight(1L, "COMPANY", false);
+        assertEquals(InsightVO.SOURCE_RULES, service.getWorkInsight(1L, "COMPANY", true).source());
+        InsightVO next = service.getWorkInsight(1L, "COMPANY", false);
         assertNotSame(first, next);
         assertEquals(InsightVO.SOURCE_AI, next.source());
         model.verify();
@@ -245,15 +268,15 @@ class InsightServiceTest {
     void previousProtocolCacheIsDiscarded() throws Exception {
         expectValid();
         expectValid();
-        InsightVO first = service.getWorkInsight(1L, false);
-        Cache<Long, Object> cache = (Cache<Long, Object>) ReflectionTestUtils.getField(service, "cache");
-        Object entry = cache.getIfPresent(1L);
+        InsightVO first = service.getWorkInsight(1L, "COMPANY", false);
+        Cache<String, Object> cache = (Cache<String, Object>) ReflectionTestUtils.getField(service, "cache");
+        Object entry = cache.getIfPresent("1|COMPANY");
         String context = ReflectionTestUtils.invokeMethod(entry, "context");
         var constructor = entry.getClass().getDeclaredConstructor(int.class, String.class, InsightVO.class);
         constructor.setAccessible(true);
-        cache.put(1L, constructor.newInstance(1, context,
+        cache.put("1|COMPANY", constructor.newInstance(1, context,
                 new InsightVO("旧文案", "新增需求110条积压", "清理任务", InsightVO.SOURCE_AI, first.stats())));
-        InsightVO result = service.getWorkInsight(1L, false);
+        InsightVO result = service.getWorkInsight(1L, "COMPANY", false);
         assertFalse(result.para().contains("110"));
         assertNotSame(first, result);
         model.verify();
@@ -263,7 +286,7 @@ class InsightServiceTest {
     void transientFailureStillRetriesAndRecovers() throws Exception {
         model.expect(requestTo(URL)).andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
         expectValid();
-        assertEquals(InsightVO.SOURCE_AI, service.getWorkInsight(1L, false).source());
+        assertEquals(InsightVO.SOURCE_AI, service.getWorkInsight(1L, "COMPANY", false).source());
         model.verify();
     }
 

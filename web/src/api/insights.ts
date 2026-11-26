@@ -1,4 +1,4 @@
-import type { TaskRow } from './tasks'
+import type { TaskScope, TaskRow } from './tasks'
 
 /** 与服务端 InsightStatsVO 一致：待处理含已延期，未完成还包含进行中。 */
 export interface InsightStats {
@@ -13,6 +13,8 @@ export interface InsightStats {
   todayNew: number
   keyTasks: number
   completionRate: number
+  /** 统计范围 COMPANY/PERSONAL——范围不一致的旧文案一律不展示 */
+  scope: TaskScope
 }
 
 export interface AiInsight {
@@ -25,10 +27,19 @@ export interface AiInsight {
 
 type InsightTask = Pick<TaskRow, 'status' | 'priority' | 'isKey' | 'planDate' | 'createTime'>
 
-/** API 与任务列表独立请求：快照不匹配时不能把旧文案与新卡片拼在一起展示。 */
-export function isInsightCurrent(insight: AiInsight | null, tasks: readonly InsightTask[], now = new Date()): boolean {
+/**
+ * API 与任务列表独立请求：快照不匹配时不能把旧文案与新卡片拼在一起展示。
+ * 范围必须一致——防止公司任务的洞察文案配到个人任务卡片上（或反之）。
+ */
+export function isInsightCurrent(
+  insight: AiInsight | null,
+  tasks: readonly InsightTask[],
+  scope: TaskScope,
+  now = new Date(),
+): boolean {
   const s = insight?.stats
   if (!s) return false // 旧接口没有快照，也不能证明文案与当前卡片一致
+  if (s.scope !== scope) return false // 范围不一致（含旧响应无 scope 字段）→ 丢弃
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
   if (s.date !== today) return false
 

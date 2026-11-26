@@ -3,6 +3,7 @@ package com.worktrace.task.dto;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
@@ -45,6 +46,14 @@ public record TaskUpdateReq(
         /** 重点标记 1=重点 0=普通（空=不修改） */
         @Min(value = 0, message = "重点标记取值 0-1")
         @Max(value = 1, message = "重点标记取值 0-1")
-        Integer isKey
+        Integer isKey,
+
+        /**
+         * 任务范围 COMPANY/PERSONAL（空=不修改，普通更新必须保留原范围）。
+         * 传入与原值不同的范围会被 400 拒绝——范围变更只能走整棵子树迁移接口，
+         * 防止单节点改范围把个人任务改回公司任务或造成父子范围不一致。
+         */
+        @Pattern(regexp = "COMPANY|PERSONAL", message = "任务范围须为 COMPANY 或 PERSONAL")
+        String taskScope
 ) {
 }

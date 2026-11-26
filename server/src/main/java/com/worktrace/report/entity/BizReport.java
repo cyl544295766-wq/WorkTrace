@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
  *
  * <ul>
  *   <li>report_type：DAILY / WEEKLY / MONTHLY</li>
+ *   <li>task_scope：生成范围 COMPANY 公司任务 / PERSONAL 个人任务（历史报告统一归 COMPANY）</li>
  *   <li>content：大模型返回的 Markdown（LongText）</li>
  *   <li>ai_model：生成时使用的模型名（留痕，便于追溯/复现）</li>
  * </ul>
@@ -31,6 +32,12 @@ public class BizReport {
 
     /** DAILY / WEEKLY / MONTHLY */
     private String reportType;
+
+    /**
+     * 生成范围 task_scope：COMPANY 公司任务 / PERSONAL 个人任务（缺省 COMPANY）。
+     * 历史报告（本列引入前生成）按规则统一归为 COMPANY，原文不改写。
+     */
+    private String taskScope;
 
     /** 起始日期 start_date */
     private LocalDate startDate;

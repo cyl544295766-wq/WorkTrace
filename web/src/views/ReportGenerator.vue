@@ -6,12 +6,14 @@ import { Check, CopyDocument, Delete, Download, View } from '@element-plus/icons
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
 import { httpDelete, httpGet, httpPut } from '@/api/request'
+import { SCOPE_OPTIONS, scopeLabel, type TaskScope } from '@/api/tasks'
 
 /** 后端报告（Result.data / done 事件后组装） */
 interface BizReport {
   id: number
   userId: number
   reportType: string
+  taskScope: string // 生成范围 COMPANY/PERSONAL（历史报告为 COMPANY）
   startDate: string
   endDate: string
   content: string
@@ -27,6 +29,9 @@ const REPORT_TYPE_OPTIONS = [
 ] as const
 
 const reportType = ref('DAILY')
+
+/** 生成范围：默认公司任务；个人报告必须显式选择（服务端按 userId + 范围查询任务/祖先/跟进） */
+const taskScope = ref<TaskScope>('COMPANY')
 
 /** 类型 → 默认统计周期：日报=今天；周报=本周一~周日；月报=本月 1 号~月末（可再手调） */
 function periodForType(t: string): [string, string] {
@@ -71,6 +76,7 @@ const content = ref('')
 interface ReportItem {
   id: number
   reportType: string
+  taskScope: string // 生成范围 COMPANY/PERSONAL（历史报告为 COMPANY）
   startDate: string
   endDate: string
   aiModel: string
@@ -190,6 +196,7 @@ async function generateReport(): Promise<void> {
     id: 0,
     userId: 0,
     reportType: reportType.value,
+    taskScope: taskScope.value,
     startDate: dateRange.value[0],
     endDate: dateRange.value[1],
     content: '',
@@ -211,6 +218,7 @@ async function generateReport(): Promise<void> {
           reportType: reportType.value,
           startDate: dateRange.value[0],
           endDate: dateRange.value[1],
+          taskScope: taskScope.value, // 默认 COMPANY；个人报告须显式选择
         }),
         signal: abortController.signal,
       },
@@ -397,6 +405,16 @@ function exportView(): void {
         </div>
 
         <div class="control-item">
+          <span class="control-label">任务范围</span>
+          <!-- 默认公司任务；选个人任务才会统计 PERSONAL 范围（必须显式选择） -->
+          <el-radio-group v-model="taskScope" size="large" :disabled="generating">
+            <el-radio-button v-for="opt in SCOPE_OPTIONS" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </el-radio-button>
+          </el-radio-group>
+        </div>
+
+        <div class="control-item">
           <span class="control-label">统计周期</span>
           <el-date-picker
             v-model="dateRange"
@@ -464,6 +482,13 @@ function exportView(): void {
             <span class="type-tag" :class="TYPE_TAG[row.reportType]">
               {{ TYPE_LABEL[row.reportType] ?? row.reportType }}
             </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="范围" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.taskScope === 'PERSONAL' ? 'warning' : 'info'" disable-transitions>
+              {{ scopeLabel(row.taskScope) }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="统计周期" width="210" align="center">

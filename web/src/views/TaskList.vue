@@ -16,10 +16,18 @@ import {
   Search,
   Star,
   StarFilled,
+  Switch,
   VideoPlay,
 } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
-import { fetchAllTaskRows } from '@/api/tasks'
+import {
+  fetchAllTaskRows,
+  SCOPE_COMPANY,
+  SCOPE_OPTIONS,
+  scopeLabel,
+  type TaskScope,
+} from '@/api/tasks'
+import { createLatestGuard } from '@/utils/latestRequest'
 import { httpDelete, httpGet, httpPost, httpPut } from '@/api/request'
 
 type TaskStatus = 'todo' | 'doing' | 'done' | 'delayed'
@@ -50,6 +58,7 @@ interface Task {
   hours: number
   parentId: number | null // NULL=顶层大任务（组树用）
   isKey: number // 重点标记 1=重点（首页「重点任务」卡） 0=普通
+  taskScope: TaskScope // 任务范围（当前列表内全部同范围）
   finishTime: string // 完成时间（后端派生），'' = 未完成
   children: Task[]
 }
@@ -172,6 +181,7 @@ interface ApiTask {
   parentId: number | null
   category: string | null
   isKey: number | null // 重点标记 1=重点 0=普通
+  taskScope: TaskScope // 任务范围 COMPANY/PERSONAL（历史行后端兜底 COMPANY）
   finishTime: string | null // ISO LocalDateTime，null = 未完成
 }
 
@@ -195,6 +205,7 @@ function fromApi(r: ApiTask): Task {
     hours: r.actualHours ?? 0,
     parentId: r.parentId,
     isKey: r.isKey ?? 0,
+    taskScope: r.taskScope || 'COMPANY',
     finishTime: r.finishTime ?? '',
     children: [],
   }
@@ -260,23 +271,94 @@ async function persistDiff(before: Map<number, string>): Promise<void> {
 /** 拉全量组树；parentId 指向缺失父级的行降级为顶层（不丢数据） */
 const loadFailed = ref(false)
 const loadErrorMsg = ref('') // 具体失败原因（网络错误 toast 由 request.ts 弹；游标异常等在这里持久展示）
+
+/* ── 任务范围切换：默认公司任务；切换重置分页/批量选择/编辑态并防旧响应覆盖新范围 ── */
+const taskScope = ref<TaskScope>(SCOPE_COMPANY)
+/** 最新请求守卫：范围快速切换时，晚返回的旧范围响应直接丢弃，不覆盖当前范围数据 */
+const loadGuard = createLatestGuard()
+/** 区分离开后再返回同一范围；旧创建请求不能恢复旧列表或编辑状态。 */
+let scopeVersion = 0
+/** 保存行内编辑可能异步等待，只执行用户最后一次选择的范围切换。 */
+const scopeSwitchGuard = createLatestGuard()
+
 async function loadTasks(): Promise<void> {
+  const seq = loadGuard.begin()
   loading.value = true
   try {
     // 游标分页拉全量（无页数上限、按 id 去重），前端组树/筛选/级联都在内存做
-    const rows = await fetchAllTaskRows()
+    const rows = await fetchAllTaskRows(taskScope.value)
+    if (!loadGuard.isCurrent(seq)) return // 过期响应：范围已切换，丢弃（新请求负责收尾 loading）
     tasks.value = buildTree(rows.map(fromApi))
     expandedIds.value = new Set() // 新数据默认全部收起
     loadFailed.value = false
     loadErrorMsg.value = ''
   } catch (e) {
+    if (!loadGuard.isCurrent(seq)) return // 过期请求的失败不污染新范围状态
     console.error('loadTasks failed', e)
     tasks.value = [] // 失败不展示半截数据；具体原因进空态文案
     loadFailed.value = true
     loadErrorMsg.value = e instanceof Error && e.message ? e.message : '加载失败，请检查网络后重试'
   } finally {
-    loading.value = false
+    if (loadGuard.isCurrent(seq)) loading.value = false
   }
+}
+
+/** 切换范围前把未保存的行内编辑尽量落库（失败则放弃草稿，随后整页重载以服务端为准） */
+async function flushPendingEdit(): Promise<void> {
+  const e = editing.value
+  if (!e) return
+  const row = findTask(e.id)
+  if (e.field === 'title') {
+    const draft = titleDraft.value
+    titleDraft.value = ''
+    editing.value = null
+    if (row && draft.trim()) {
+      try {
+        await commitField(row, 'title', draft)
+      } catch {
+        // 保存失败：草稿放弃，重载后展示服务端值（request.ts 已弹错）
+      }
+    }
+  } else if (e.field === 'category' && categoryInputMode.value && row) {
+    const draft = categoryDraft.value
+    categoryInputMode.value = false
+    categoryDraft.value = ''
+    editing.value = null
+    try {
+      await commitField(row, 'category', draft.trim() || 'OTHER')
+    } catch {
+      // 同上
+    }
+  } else {
+    editing.value = null
+  }
+}
+
+/** 切换公司/个人任务：先落未保存编辑，再重置分页、批量选择与编辑态，最后按新范围重载 */
+async function switchScope(next: TaskScope): Promise<void> {
+  const seq = scopeSwitchGuard.begin()
+  if (next === taskScope.value) return
+  await flushPendingEdit()
+  if (!scopeSwitchGuard.isCurrent(seq)) return
+  scopeVersion++
+  taskScope.value = next
+  tasks.value = []
+  rowDepth.clear()
+  expandedIds.value = new Set()
+  page.value = 1 // 重置分页
+  clearSelection() // 重置批量选择
+  selectedId.value = null
+  tableRef.value?.setCurrentRow()
+  editing.value = null
+  titleDraft.value = ''
+  categoryInputMode.value = false
+  categoryDraft.value = ''
+  void loadTasks() // 竞态由 loadGuard 丢弃过期响应
+}
+
+/** el-segmented 更新回调：只接受合法范围值（防御外部写入），再走 switchScope */
+function onScopeChange(v: unknown): void {
+  if (v === 'COMPANY' || v === 'PERSONAL') void switchScope(v)
 }
 /** 行深度表（id → 层级：根=0，子=1，孙=2…）：rowClassName 区分「子级 / 子孙级」样式用 */
 const rowDepth = new Map<number, number>()
@@ -797,6 +879,8 @@ function today(): string {
 
 /* ── 新增：addTask(顶级) / addTask(选中行 id) 加为子任务（先 POST 落库拿真 id） ── */
 async function addTask(parentId: number | null): Promise<void> {
+  const requestScope = taskScope.value
+  const requestVersion = scopeVersion
   editing.value = null
   // 指定的父级可能已被删除 → 降级为顶层，不丢操作
   if (parentId != null && !findTask(parentId)) parentId = null
@@ -811,8 +895,16 @@ async function addTask(parentId: number | null): Promise<void> {
     actualHours: 0,
     parentId,
     isKey: 0,
+    // 顶层任务用当前范围；子任务不传，由服务端强制继承父任务范围（禁止跨范围挂接）
+    ...(parentId == null ? { taskScope: requestScope } : {}),
   }).catch(() => null)
   if (!created) return // 失败已由 request.ts 弹错
+  if (requestVersion !== scopeVersion) {
+    // 任务仍成功落在请求时的范围；用户已切换，不把旧结果插入当前视图。
+    // 若已返回原范围，以服务端列表去重补齐，不恢复旧请求的选中和编辑态。
+    if (requestScope === taskScope.value) await loadTasks()
+    return
+  }
 
   const draft = fromApi(created)
   const parent = parentId != null ? findTask(parentId) : undefined
@@ -832,6 +924,7 @@ async function addTask(parentId: number | null): Promise<void> {
   const before = snapshot()
   syncParents(tasks.value)
   await persistDiff(before)
+  if (requestVersion !== scopeVersion) return
 
   selectedId.value = target.id
   tableRef.value?.setCurrentRow(target) // target 一定是顶层行，EP 可选中
@@ -868,6 +961,69 @@ async function handleDelete(row: Task): Promise<void> {
     syncParents(tasks.value) // 被删节点的父级派生状态可能变化
     await persistDiff(before)
     ElMessage.success('已删除')
+  }
+}
+
+/* ── 调整任务范围：定位所在顶层任务 → 确认（提示影响数量）→ 整棵树迁移 → 本地移除。
+   前端定位顶层任务后提交；后端拒绝直接传子任务 id，整棵任务树一起迁移 ── */
+
+/** 向上找所在顶层任务（seen 防脏数据成环） */
+function findRoot(row: Task): Task {
+  let cur = row
+  const seen = new Set<number>([cur.id])
+  for (;;) {
+    const p = cur.parentId != null ? findTask(cur.parentId) : undefined
+    if (!p || seen.has(p.id)) return cur
+    seen.add(p.id)
+    cur = p
+  }
+}
+
+/** 子树任务数（含自身）——迁移前提示影响数量用 */
+function countSubtree(row: Task): number {
+  let n = 1
+  const walk = (list: Task[]): void => {
+    for (const t of list) {
+      n++
+      walk(t.children)
+    }
+  }
+  walk(row.children)
+  return n
+}
+
+async function handleMigrateScope(row: Task): Promise<void> {
+  const root = findRoot(row)
+  const target: TaskScope = taskScope.value === 'COMPANY' ? 'PERSONAL' : 'COMPANY'
+  const count = countSubtree(root)
+  try {
+    await ElMessageBox.confirm(
+      `将把「${root.title || '未命名'}」及其全部子任务（共 ${count} 个任务）整体迁移到${scopeLabel(target)}。子任务不会单独移动。`,
+      '调整任务范围',
+      { type: 'warning', confirmButtonText: '迁移', cancelButtonText: '取消' },
+    )
+  } catch {
+    return // 取消
+  }
+  try {
+    const res = await httpPut<{ migrated: number }>(`/tasks/${root.id}/scope`, { scope: target })
+    ElMessage.success(`已迁移 ${res.migrated} 个任务到${scopeLabel(target)}`)
+  } catch {
+    return // 失败已由 request.ts 弹错，本地视图不动
+  }
+  // 当前范围视图移除整棵树（服务端已迁走，服务端为准）
+  const walk = (list: Task[]): boolean => {
+    const i = list.findIndex((t) => t.id === root.id)
+    if (i !== -1) {
+      list.splice(i, 1)
+      return true
+    }
+    return list.some((t) => walk(t.children))
+  }
+  if (walk(tasks.value)) {
+    if (selectedId.value === root.id) selectedId.value = null
+    if (selectedRows.value.some((r) => r.id === root.id || findRoot(r).id === root.id)) clearSelection()
+    syncParents(tasks.value)
   }
 }
 
@@ -973,6 +1129,15 @@ async function batchDelete(): Promise<void> {
           点击单元格直接修改 · 选中任务后点「新增子任务」加为它的子任务
           <template v-if="selectedId != null">（当前选中：{{ findTask(selectedId)?.title || '未命名' }}）</template>
         </p>
+        <!-- 范围切换：默认公司任务；切换后树/统计/筛选/分页/批量/空态全部只作用于当前范围 -->
+        <div class="scope-switch" role="tablist" aria-label="任务范围切换">
+          <el-segmented
+            :model-value="taskScope"
+            :options="SCOPE_OPTIONS"
+            @update:model-value="onScopeChange"
+          />
+          <span class="scope-switch__hint">当前范围：{{ scopeLabel(taskScope) }}</span>
+        </div>
       </div>
       <div class="page-header__actions">
         <el-button size="large" class="btn-ghost" @click="goReport">AI 生成报告</el-button>
@@ -1322,7 +1487,7 @@ async function batchDelete(): Promise<void> {
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="212" align="center" fixed="right">
+        <el-table-column label="操作" width="272" align="center" fixed="right">
           <template #default="{ row }">
             <el-button
               link
@@ -1334,6 +1499,9 @@ async function batchDelete(): Promise<void> {
               {{ (row as Task).isKey === 1 ? '取消重点' : '设重点' }}
             </el-button>
             <el-button link type="primary" :icon="Memo" @click="openLogs(row as Task)">记录</el-button>
+            <el-button link type="primary" :icon="Switch" @click="handleMigrateScope(row as Task)">
+              调范围
+            </el-button>
             <el-button link class="btn-delete" :icon="Delete" @click="handleDelete(row as Task)">删除</el-button>
           </template>
         </el-table-column>
@@ -1528,6 +1696,24 @@ async function batchDelete(): Promise<void> {
   color: var(--wt-muted);
   font-size: 14px;
   line-height: 1.6;
+}
+
+/* 范围切换：公司 / 个人（默认公司任务） */
+.scope-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.scope-switch :deep(.el-segmented) {
+  --el-segmented-bg-color: rgba(255, 255, 255, 0.72);
+}
+
+.scope-switch__hint {
+  color: var(--wt-muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .page-header__actions {

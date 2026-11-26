@@ -21,6 +21,12 @@
 --   2026-11-06 新增 is_key —— 存量库补齐（幂等脚本见 13_task_is_key.sql）：
 --   ALTER TABLE biz_task
 --     ADD COLUMN is_key TINYINT(1) NOT NULL DEFAULT 0 COMMENT '重点标记 1=重点（首页重点任务展示） 0=普通' AFTER category;
+--   2026-11-26 新增 task_scope —— 任务范围 COMPANY公司/PERSONAL个人（幂等脚本见 14_task_scope.sql）：
+--   ALTER TABLE biz_task
+--     ADD COLUMN task_scope VARCHAR(16) NOT NULL DEFAULT 'COMPANY' COMMENT '任务范围 COMPANY公司任务/PERSONAL个人任务' AFTER is_key;
+--   ALTER TABLE biz_report
+--     ADD COLUMN task_scope VARCHAR(16) NOT NULL DEFAULT 'COMPANY' COMMENT '生成范围 COMPANY公司任务/PERSONAL个人任务' AFTER report_type;
+--   全新库由本文件直接建出；存量库执行 14（可重复执行，不会把 PERSONAL 改回 COMPANY）。
 -- ============================================================
 
 USE work_system;
@@ -38,6 +44,7 @@ CREATE TABLE IF NOT EXISTS biz_task (
     parent_id     BIGINT       DEFAULT NULL COMMENT '父任务 id（NULL=顶层大任务）',
     category      VARCHAR(32)  DEFAULT NULL COMMENT '业务分类 FEATURE/BUG/DATA/JOINT/DOC/OPS/OTHER',
     is_key        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '重点标记 1=重点（首页重点任务展示） 0=普通',
+    task_scope    VARCHAR(16)  NOT NULL DEFAULT 'COMPANY' COMMENT '任务范围 COMPANY公司任务/PERSONAL个人任务',
     finish_time   DATETIME(3)  DEFAULT NULL COMMENT '完成时间（状态变为已完成时派生，移出已完成时清空）',
     create_time   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     update_time   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -64,6 +71,7 @@ CREATE TABLE IF NOT EXISTS biz_report (
     id          BIGINT      NOT NULL AUTO_INCREMENT,
     user_id     BIGINT      NOT NULL,
     report_type VARCHAR(16) NOT NULL COMMENT 'DAILY/WEEKLY/MONTHLY',
+    task_scope  VARCHAR(16) NOT NULL DEFAULT 'COMPANY' COMMENT '生成范围 COMPANY公司任务/PERSONAL个人任务',
     start_date  DATE        NOT NULL,
     end_date    DATE        NOT NULL,
     content     LONGTEXT    COMMENT 'AI 生成的 Markdown',

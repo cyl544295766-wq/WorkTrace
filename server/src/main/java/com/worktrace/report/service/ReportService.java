@@ -13,6 +13,7 @@ import com.worktrace.report.dto.GenerateReportReq;
 import com.worktrace.report.dto.ReportItemVO;
 import com.worktrace.report.entity.BizReport;
 import com.worktrace.report.mapper.BizReportMapper;
+import com.worktrace.task.TaskScope;
 import com.worktrace.task.entity.BizTask;
 import com.worktrace.task.entity.BizTaskLog;
 import com.worktrace.task.mapper.BizTaskLogMapper;
@@ -271,8 +272,9 @@ public class ReportService {
         String content = r.getContent() == null ? "" : r.getContent().strip();
         String summary = content.length() > 80 ? content.substring(0, 80) + "…" : content;
         summary = summary.replace('\n', ' ');
-        return new ReportItemVO(r.getId(), r.getReportType(), r.getStartDate(), r.getEndDate(),
-                r.getAiModel(), r.getCreateTime(), summary);
+        return new ReportItemVO(r.getId(), r.getReportType(),
+                r.getTaskScope() == null ? TaskScope.DEFAULT : r.getTaskScope(),
+                r.getStartDate(), r.getEndDate(), r.getAiModel(), r.getCreateTime(), summary);
     }
 
     /** 按归属查单条报告（含全文）；不存在或非本人返回 null */
@@ -317,10 +319,13 @@ public class ReportService {
      */
     public BizReport generateAndSaveReport(Long userId, GenerateReportReq req) {
         guardGenerateCooldown(userId);
+        // 默认只统计公司任务；个人报告必须由请求显式指定范围
+        String scope = TaskScope.normalize(req.taskScope());
 
         // ① 数据准备 + Prompt 构建（与 SSE 路径共用 buildPrompt：
-        //    完整统计走数据库聚合、明细/跟进按 Prompt 预算限量读取，不再整段载入周期内任务）
-        String prompt = buildPrompt(userId, req.reportType(), req.startDate(), req.endDate());
+        //    完整统计走数据库聚合、明细/跟进按 Prompt 预算限量读取，不再整段载入周期内任务；
+        //    任务/祖先/跟进查询同时限定 userId + 范围，工作报告不会混入个人任务）
+        String prompt = buildPrompt(userId, scope, req.reportType(), req.startDate(), req.endDate());
 
         // ③ 调用大模型（输出上限按报告类型）
         String markdown = callChatModel(prompt, outputBudget(req.reportType()));
@@ -329,6 +334,7 @@ public class ReportService {
         BizReport report = new BizReport();
         report.setUserId(userId);
         report.setReportType(req.reportType());
+        report.setTaskScope(scope); // 记录生成范围
         report.setStartDate(req.startDate());
         report.setEndDate(req.endDate());
         report.setContent(markdown);
@@ -407,7 +413,7 @@ public class ReportService {
      * <p>数据归属：所有查询均限定 userId —— parentId 一旦指向他人任务 id，查不到，
      * 落为孤儿根（"父任务不在本范围"），别人的任务/跟进不进报告。
      */
-    private String buildPrompt(Long userId, String reportType, LocalDate startDate, LocalDate endDate) {
+    private String buildPrompt(Long userId, String scope, String reportType, LocalDate startDate, LocalDate endDate) {
         String typeCn = switch (reportType) {
             case "DAILY" -> "日报";
             case "WEEKLY" -> "周报";
@@ -416,7 +422,7 @@ public class ReportService {
         };
 
         // ① 完整统计 = 数据库聚合（不读任务行）
-        Map<String, Object> statsRow = fetchStatsAggregate(userId, startDate, endDate);
+        Map<String, Object> statsRow = fetchStatsAggregate(userId, scope, startDate, endDate);
         int total = num(statsRow, "total");
         int done = num(statsRow, "done_cnt");
         int doing = num(statsRow, "doing_cnt");
@@ -436,9 +442,9 @@ public class ReportService {
         sb.append("\n任务清单（子任务缩进展示；「跟进」为用户对该任务的实际工作叙述，是报告的重要事实依据）：\n");
 
         // ② 祖先骨架（必要祖先，≤5 轮补拉）+ 容器判定集（完成节点含未完成后代 → 恒展开）
-        Map<Long, BizTask> skeleton = loadAncestorSkeleton(userId, startDate, endDate);
+        Map<Long, BizTask> skeleton = loadAncestorSkeleton(userId, scope, startDate, endDate);
         Set<Long> skeletonIds = skeleton.keySet();
-        Set<Long> containerIds = loadContainerIds(userId, startDate, endDate, skeleton);
+        Set<Long> containerIds = loadContainerIds(userId, scope, startDate, endDate, skeleton);
 
         // ③ 决策遍历（根节点游标分批）：预算规则不变，只访问根与展开节点的子级；
         //    根/子节点均 (planDate, id) 稳定排序游标分批（≤NODE_PAGE_SIZE/页），一次不返回全部节点
@@ -465,21 +471,22 @@ public class ReportService {
                 }
             }
         }
-        NodePager rootPager = new NodePager(userId, null, startDate, endDate, skeletonIds, !skeletonHasNullDate);
+        NodePager rootPager = new NodePager(userId, scope, null, startDate, endDate, skeletonIds,
+                !skeletonHasNullDate);
         while (true) {
             List<BizTask> page = rootPager.nextPage();
             if (page.isEmpty()) {
                 break;
             }
             for (BizTask root : page) {
-                planTaskTree(userId, root, 0, startDate, endDate, skeletonIds, nullDateParents, containerIds,
-                        completedBudget, seq, completedUsed, unfinishedUsed,
+                planTaskTree(userId, scope, root, 0, startDate, endDate, skeletonIds, nullDateParents,
+                        containerIds, completedBudget, seq, completedUsed, unfinishedUsed,
                         completedDropped, unfinishedDropped, expandedIds, seqById);
             }
         }
 
         // ④ 明细按预算：只读展开集的完整行（标题/正文/优先级/进度/工时/重点）
-        Map<Long, BizTask> detailById = fetchDetailRows(userId, expandedIds);
+        Map<Long, BizTask> detailById = fetchDetailRows(userId, scope, expandedIds);
         Map<Long, List<BizTask>> renderChildren = new LinkedHashMap<>();
         List<BizTask> renderRoots = new ArrayList<>();
         for (BizTask t : detailById.values()) {
@@ -495,7 +502,7 @@ public class ReportService {
 
         // ⑤ 跟进记录：只查展开集的任务（周期范围/单任务条数/总预算规则不变）
         Map<Long, List<BizTaskLog>> logsByTask =
-                fetchLogsGroupedByTask(userId, new ArrayList<>(expandedIds), startDate, endDate);
+                fetchLogsGroupedByTask(userId, scope, new ArrayList<>(expandedIds), startDate, endDate);
 
         // ⑥ 树状渲染 + 超额说明（计数来自决策遍历，语义与历史实现一致）
         Map<Long, String> contentById = new LinkedHashMap<>();
@@ -536,7 +543,7 @@ public class ReportService {
      * 完整统计聚合（唯一一条查询）：周期内总数/状态分布/重点数。
      * 统计口径与历史内存统计一致（todo = 其余状态差值；status 非空列，null 视为待办）。
      */
-    private Map<String, Object> fetchStatsAggregate(Long userId, LocalDate startDate, LocalDate endDate) {
+    private Map<String, Object> fetchStatsAggregate(Long userId, String scope, LocalDate startDate, LocalDate endDate) {
         List<Map<String, Object>> rows = bizTaskMapper.selectMaps(Wrappers.<BizTask>query()
                 .select("COUNT(*) AS total",
                         "SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END) AS done_cnt",
@@ -544,6 +551,7 @@ public class ReportService {
                         "SUM(CASE WHEN status = 3 THEN 1 ELSE 0 END) AS delayed_cnt",
                         "SUM(CASE WHEN is_key = 1 THEN 1 ELSE 0 END) AS key_cnt")
                 .eq("user_id", userId)
+                .eq("task_scope", scope)
                 .ge("plan_date", startDate)
                 .le("plan_date", endDate));
         return rows == null || rows.isEmpty() ? Map.of() : rows.get(0);
@@ -560,12 +568,13 @@ public class ReportService {
      * 只取 (id, parentId, status, planDate) 四列——树形结构与游走决策用，明细列不在此读取。
      * 与历史「nodeMap 补拉」同一语义：parentId 指向他人/已删除任务 → 查不到 → 调用方落孤儿根。
      */
-    private Map<Long, BizTask> loadAncestorSkeleton(Long userId, LocalDate startDate, LocalDate endDate) {
+    private Map<Long, BizTask> loadAncestorSkeleton(Long userId, String scope, LocalDate startDate, LocalDate endDate) {
         Map<Long, BizTask> skeleton = new LinkedHashMap<>();
         Set<Long> pending = new LinkedHashSet<>();
         List<Map<String, Object>> parentRows = bizTaskMapper.selectMaps(Wrappers.<BizTask>query()
                 .select("DISTINCT parent_id AS pid")
                 .eq("user_id", userId)
+                .eq("task_scope", scope)
                 .isNotNull("parent_id")
                 .ge("plan_date", startDate)
                 .le("plan_date", endDate));
@@ -579,7 +588,8 @@ public class ReportService {
             List<BizTask> rows = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
                     .select(BizTask::getId, BizTask::getParentId, BizTask::getStatus, BizTask::getPlanDate)
                     .in(BizTask::getId, pending)
-                    .eq(BizTask::getUserId, userId));
+                    .eq(BizTask::getUserId, userId)
+                    .eq(BizTask::getTaskScope, scope));
             if (rows == null || rows.isEmpty()) {
                 break;
             }
@@ -599,12 +609,15 @@ public class ReportService {
      * 报告周期内、属于范围内任务的跟进记录（一次查询 LIMIT 200 兜底，按 taskId 分组）。
      * 归属限制：taskId 来自当前用户任务 + 补拉祖先，查询仍必须带 userId（纵深防御，防跨用户混入）。
      */
-    private Map<Long, List<BizTaskLog>> fetchLogsGroupedByTask(Long userId, List<Long> taskIds, LocalDate start, LocalDate end) {
+    private Map<Long, List<BizTaskLog>> fetchLogsGroupedByTask(Long userId, String scope, List<Long> taskIds, LocalDate start, LocalDate end) {
         if (taskIds.isEmpty()) {
             return Map.of();
         }
         List<BizTaskLog> logs = bizTaskLogMapper.selectList(Wrappers.<BizTaskLog>lambdaQuery()
                 .eq(BizTaskLog::getUserId, userId)
+                // 纵深防御：跟进记录再按范围核对所属任务，防止个人任务跟进混入工作报告
+                .apply("task_id IN (SELECT id FROM biz_task WHERE user_id = {0} AND task_scope = {1})",
+                        userId, scope)
                 .in(BizTaskLog::getTaskId, taskIds)
                 .ge(BizTaskLog::getCreateTime, start.atStartOfDay())
                 .lt(BizTaskLog::getCreateTime, end.plusDays(1).atStartOfDay())
@@ -630,7 +643,7 @@ public class ReportService {
      * 被剪枝节点整棵子树不再访问（不展开、不计数）——子级经 {@link NodePager} 游标分批读取，
      * 剪枝子树一行不读。计数走 int[]（递归内共享），depth 硬上限防御异常数据成环。
      */
-    private void planTaskTree(Long userId, BizTask node, int depth,
+    private void planTaskTree(Long userId, String scope, BizTask node, int depth,
                               LocalDate startDate, LocalDate endDate,
                               Set<Long> skeletonIds, Set<Long> nullDateParents, Set<Long> containerIds,
                               int completedBudget, int[] seq,
@@ -666,7 +679,7 @@ public class ReportService {
         expandedIds.add(node.getId());
 
         // 子级游标分批遍历（仅展开节点触发；剪枝子树不读取）
-        NodePager pager = new NodePager(userId, node.getId(), startDate, endDate, skeletonIds,
+        NodePager pager = new NodePager(userId, scope, node.getId(), startDate, endDate, skeletonIds,
                 !nullDateParents.contains(node.getId()));
         while (true) {
             List<BizTask> page = pager.nextPage();
@@ -674,15 +687,15 @@ public class ReportService {
                 break;
             }
             for (BizTask child : page) {
-                planTaskTree(userId, child, depth + 1, startDate, endDate, skeletonIds, nullDateParents,
-                        containerIds, completedBudget, seq, completedUsed, unfinishedUsed,
+                planTaskTree(userId, scope, child, depth + 1, startDate, endDate, skeletonIds,
+                        nullDateParents, containerIds, completedBudget, seq, completedUsed, unfinishedUsed,
                         completedDropped, unfinishedDropped, expandedIds, seqById);
             }
         }
     }
 
     /** 展开集明细行（标题/正文/优先级/进度/工时/重点等渲染列）：只按决策遍历实际展开的任务读取 */
-    private Map<Long, BizTask> fetchDetailRows(Long userId, Set<Long> expandedIds) {
+    private Map<Long, BizTask> fetchDetailRows(Long userId, String scope, Set<Long> expandedIds) {
         if (expandedIds.isEmpty()) {
             return Map.of();
         }
@@ -691,6 +704,7 @@ public class ReportService {
                         BizTask::getPriority, BizTask::getProgress, BizTask::getPlanDate,
                         BizTask::getActualHours, BizTask::getIsKey, BizTask::getContent)
                 .eq(BizTask::getUserId, userId)
+                .eq(BizTask::getTaskScope, scope)
                 .in(BizTask::getId, expandedIds));
         Map<Long, BizTask> byId = new LinkedHashMap<>();
         for (BizTask t : rows) {
@@ -703,7 +717,7 @@ public class ReportService {
      * 容器判定集：节点集内未完成任务的全部祖先 id ——「完成节点含未完成后代 → 恒展开（不占预算）」。
      * 与历史 {@code hasUnfinishedInSubtree} 递归同一语义，但沿父链上溯即可，无需展开子树。
      */
-    private Set<Long> loadContainerIds(Long userId, LocalDate startDate, LocalDate endDate,
+    private Set<Long> loadContainerIds(Long userId, String scope, LocalDate startDate, LocalDate endDate,
                                        Map<Long, BizTask> skeleton) {
         Set<Long> containers = new LinkedHashSet<>();
         Set<Long> pending = new LinkedHashSet<>();
@@ -711,6 +725,7 @@ public class ReportService {
         List<Map<String, Object>> seedRows = bizTaskMapper.selectMaps(Wrappers.<BizTask>query()
                 .select("DISTINCT parent_id AS pid")
                 .eq("user_id", userId)
+                .eq("task_scope", scope)
                 .isNotNull("parent_id")
                 .ne("status", 2)
                 .ge("plan_date", startDate)
@@ -746,7 +761,8 @@ public class ReportService {
                 List<BizTask> rows = bizTaskMapper.selectList(Wrappers.<BizTask>lambdaQuery()
                         .select(BizTask::getId, BizTask::getParentId)
                         .in(BizTask::getId, needRows)
-                        .eq(BizTask::getUserId, userId));
+                        .eq(BizTask::getUserId, userId)
+                        .eq(BizTask::getTaskScope, scope));
                 for (BizTask t : rows) {
                     if (t.getParentId() != null && !containers.contains(t.getParentId())) {
                         next.add(t.getParentId());
@@ -772,6 +788,7 @@ public class ReportService {
      */
     private final class NodePager {
         private final Long userId;
+        private final String scope;
         private final Long parentId;
         private final LocalDate startDate;
         private final LocalDate endDate;
@@ -782,9 +799,10 @@ public class ReportService {
         private Long cursorId;
         private boolean exhausted;
 
-        NodePager(Long userId, Long parentId, LocalDate startDate, LocalDate endDate,
+        NodePager(Long userId, String scope, Long parentId, LocalDate startDate, LocalDate endDate,
                   Set<Long> skeletonIds, boolean skipNullPhase) {
             this.userId = userId;
+            this.scope = scope;
             this.parentId = parentId;
             this.startDate = startDate;
             this.endDate = endDate;
@@ -797,7 +815,8 @@ public class ReportService {
             while (!exhausted) {
                 LambdaQueryWrapper<BizTask> w = Wrappers.<BizTask>lambdaQuery()
                         .select(BizTask::getId, BizTask::getParentId, BizTask::getStatus, BizTask::getPlanDate)
-                        .eq(BizTask::getUserId, userId);
+                        .eq(BizTask::getUserId, userId)
+                        .eq(BizTask::getTaskScope, scope);
                 // 范围下推：报告周期 ∪ 祖先骨架（不读范围外历史子任务）
                 if (skeletonIds.isEmpty()) {
                     w.between(BizTask::getPlanDate, startDate, endDate);
@@ -811,9 +830,10 @@ public class ReportService {
                             : " OR p.id IN (" + skeletonIds.stream().map(String::valueOf)
                                     .collect(Collectors.joining(",")) + ")";
                     w.apply("(biz_task.parent_id IS NULL OR NOT EXISTS (SELECT 1 FROM biz_task p"
-                                    + " WHERE p.id = biz_task.parent_id AND p.user_id = {0} AND "
-                                    + "(p.plan_date BETWEEN {1} AND {2}" + skelIn + ")))",
-                            userId, startDate, endDate);
+                                    + " WHERE p.id = biz_task.parent_id AND p.user_id = {0}"
+                                    + " AND p.task_scope = {3}"
+                                    + " AND (p.plan_date BETWEEN {1} AND {2}" + skelIn + ")))",
+                            userId, startDate, endDate, scope);
                 } else {
                     w.eq(BizTask::getParentId, parentId);
                 }
@@ -1022,15 +1042,19 @@ public class ReportService {
      */
     public void streamGenerateReport(Long userId, GenerateReportReq req, SseEmitter emitter) {
         guardGenerateCooldown(userId);
+        // 默认只统计公司任务；个人报告必须由请求显式指定范围
+        String scope = TaskScope.normalize(req.taskScope());
 
         // ① 数据准备 + Prompt 构建（与同步路径共用 buildPrompt：
-        //    完整统计走数据库聚合、明细/跟进按 Prompt 预算限量读取，不再整段载入周期内任务）
-        String prompt = buildPrompt(userId, req.reportType(), req.startDate(), req.endDate());
+        //    完整统计走数据库聚合、明细/跟进按 Prompt 预算限量读取，不再整段载入周期内任务；
+        //    任务/祖先/跟进查询同时限定 userId + 范围，工作报告不会混入个人任务）
+        String prompt = buildPrompt(userId, scope, req.reportType(), req.startDate(), req.endDate());
 
         // ③ 落库对象先备好，流结束后补 content 再 insert
         BizReport report = new BizReport();
         report.setUserId(userId);
         report.setReportType(req.reportType());
+        report.setTaskScope(scope); // 记录生成范围
         report.setStartDate(req.startDate());
         report.setEndDate(req.endDate());
         report.setAiModel(model);

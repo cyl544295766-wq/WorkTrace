@@ -7,7 +7,7 @@ import jakarta.validation.constraints.Pattern;
 import java.time.LocalDate;
 
 /**
- * 生成报告请求（POST /api/reports/generate）。
+ * 生成报告请求（POST /api/reports/generate、POST /api/reports/stream-generate）。
  * 不含 user_id —— 归属用户来自登录会话。
  */
 public record GenerateReportReq(
@@ -19,6 +19,13 @@ public record GenerateReportReq(
         LocalDate startDate,
 
         @NotNull(message = "结束日期不能为空")
-        LocalDate endDate
+        LocalDate endDate,
+
+        /**
+         * 生成范围 COMPANY/PERSONAL；空 = COMPANY（默认只统计公司任务，
+         * 个人报告必须由调用方显式选择）。非法值 400。
+         */
+        @Pattern(regexp = "COMPANY|PERSONAL", message = "任务范围须为 COMPANY 或 PERSONAL")
+        String taskScope
 ) {
 }

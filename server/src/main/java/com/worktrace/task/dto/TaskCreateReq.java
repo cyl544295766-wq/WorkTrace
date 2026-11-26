@@ -3,6 +3,7 @@ package com.worktrace.task.dto;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
@@ -50,6 +51,13 @@ public record TaskCreateReq(
         /** 重点标记 1=重点 0=普通；空则默认 0 */
         @Min(value = 0, message = "重点标记取值 0-1")
         @Max(value = 1, message = "重点标记取值 0-1")
-        Integer isKey
+        Integer isKey,
+
+        /**
+         * 任务范围 COMPANY/PERSONAL；空 = COMPANY（旧客户端缺省按公司任务处理）。
+         * 挂到父任务下时由服务端强制继承父任务范围，显式传入不一致的值会 400。
+         */
+        @Pattern(regexp = "COMPANY|PERSONAL", message = "任务范围须为 COMPANY 或 PERSONAL")
+        String taskScope
 ) {
 }

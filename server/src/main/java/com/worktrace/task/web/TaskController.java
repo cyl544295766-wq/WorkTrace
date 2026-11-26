@@ -5,6 +5,8 @@ import com.worktrace.auth.dto.LoginUser;
 import com.worktrace.common.api.Result;
 import com.worktrace.task.dto.TaskCreateReq;
 import com.worktrace.task.dto.TaskPageReq;
+import com.worktrace.task.dto.TaskScopeMigrateVO;
+import com.worktrace.task.dto.TaskScopeReq;
 import com.worktrace.task.dto.TaskScrollPage;
 import com.worktrace.task.dto.TaskScrollReq;
 import com.worktrace.task.dto.TaskUpdateReq;
@@ -34,11 +36,12 @@ import java.time.LocalDateTime;
  * 这里再判空一次兜底（未登录返回 401）。
  *
  * <ul>
- *   <li>POST   /api/tasks        —— 新增</li>
- *   <li>DELETE /api/tasks/{id}   —— 删除</li>
- *   <li>PUT    /api/tasks        —— 更新（部分更新）</li>
- *   <li>GET    /api/tasks/page   —— 分页查询（status + 日期范围，页码钳 1-1000）</li>
- *   <li>GET    /api/tasks/scroll —— 游标分页（keyset，无页码上限，前端拉全量用）</li>
+ *   <li>POST   /api/tasks              —— 新增（范围缺省 COMPANY；子任务继承父范围）</li>
+ *   <li>DELETE /api/tasks/{id}         —— 删除（级联后代）</li>
+ *   <li>PUT    /api/tasks              —— 更新（部分更新，不改范围）</li>
+ *   <li>PUT    /api/tasks/{id}/scope   —— 范围迁移（整棵子树，事务一致）</li>
+ *   <li>GET    /api/tasks/page         —— 分页查询（范围 + status + 日期，页码钳 1-1000）</li>
+ *   <li>GET    /api/tasks/scroll       —— 游标分页（keyset，无页码上限，前端拉全量用）</li>
  * </ul>
  */
 @RestController
@@ -93,7 +96,7 @@ public class TaskController {
         return Result.ok(updated);
     }
 
-    /** GET /api/tasks/page 分页查询（按 status、plan_date 日期范围筛选） */
+    /** GET /api/tasks/page 分页查询（按范围、status、plan_date 日期范围筛选） */
     @GetMapping("/page")
     public Result<Page<BizTask>> page(
             @RequestParam(defaultValue = "1") int page,
@@ -101,29 +104,49 @@ public class TaskController {
             @RequestParam(required = false) Integer status,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false) String taskScope,
             HttpSession session) {
         LoginUser user = currentUser(session);
         if (user == null) {
             return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
         }
-        TaskPageReq query = new TaskPageReq(page, size, status, startDate, endDate);
+        TaskPageReq query = new TaskPageReq(page, size, status, startDate, endDate, taskScope);
         return Result.ok(taskService.page(user.getId(), query));
     }
 
     /**
      * GET /api/tasks/scroll 游标分页（keyset：create_time DESC, id DESC 稳定排序，无页码上限）。
      * cursorTime/cursorId = 上一页最后一条的排序键（ISO LocalDateTime + id），首页两者都不传。
+     * taskScope 缺省 COMPANY，与 /page 同一过滤口径。
      */
     @GetMapping("/scroll")
     public Result<TaskScrollPage> scroll(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursorTime,
             @RequestParam(required = false) Long cursorId,
             @RequestParam(defaultValue = "500") int size,
+            @RequestParam(required = false) String taskScope,
             HttpSession session) {
         LoginUser user = currentUser(session);
         if (user == null) {
             return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
         }
-        return Result.ok(taskService.scroll(user.getId(), new TaskScrollReq(cursorTime, cursorId, size)));
+        return Result.ok(taskService.scroll(user.getId(),
+                new TaskScrollReq(cursorTime, cursorId, size, taskScope)));
+    }
+
+    /**
+     * PUT /api/tasks/{id}/scope 调整任务范围——顶层任务及其全部后代整体迁移（事务一致）。
+     * 子任务不能单独跨范围；目标范围非法 400，任务不存在或非本人 404。
+     */
+    @PutMapping("/{id}/scope")
+    public Result<TaskScopeMigrateVO> migrateScope(@PathVariable Long id,
+                                                   @Valid @RequestBody TaskScopeReq req,
+                                                   HttpSession session) {
+        LoginUser user = currentUser(session);
+        if (user == null) {
+            return Result.fail(Result.UNAUTHORIZED, "未登录或会话已过期");
+        }
+        int migrated = taskService.migrateScope(user.getId(), id, req.scope());
+        return Result.ok(new TaskScopeMigrateVO(id, req.scope(), migrated));
     }
 }

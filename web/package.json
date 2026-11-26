@@ -11,6 +11,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "type-check": "vue-tsc --noEmit",
     "test:focus": "node --test scripts/test-focus-tasks.mjs",
+    "test:scope": "node --test scripts/test-latest-guard.mjs scripts/test-task-scope.mjs",
+    "test": "npm run test:focus && npm run test:scope",
     "preview": "vite preview"
   },
   "dependencies": {

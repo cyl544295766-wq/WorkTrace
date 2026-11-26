@@ -1,5 +1,20 @@
 import { httpGet, ApiError } from './request'
 
+/** 任务范围：COMPANY 公司任务 / PERSONAL 个人任务（缺省 COMPANY，后端同口径） */
+export type TaskScope = 'COMPANY' | 'PERSONAL'
+
+export const SCOPE_COMPANY: TaskScope = 'COMPANY'
+export const SCOPE_PERSONAL: TaskScope = 'PERSONAL'
+
+export const SCOPE_OPTIONS: { label: string; value: TaskScope }[] = [
+  { label: '公司任务', value: 'COMPANY' },
+  { label: '个人任务', value: 'PERSONAL' },
+]
+
+export function scopeLabel(scope: TaskScope): string {
+  return scope === 'PERSONAL' ? '个人任务' : '公司任务'
+}
+
 /** 后端任务行（BizTask 的 JSON 形状；TaskList 与 Home 共用） */
 export interface TaskRow {
   id: number
@@ -12,6 +27,7 @@ export interface TaskRow {
   parentId: number | null
   category: string | null
   isKey: number | null // 重点标记 1=重点 0=普通
+  taskScope: TaskScope // 任务范围（历史行后端兜底为 COMPANY）
   finishTime: string | null // ISO LocalDateTime，null = 未完成
   createTime: string | null
 }
@@ -28,7 +44,7 @@ interface TaskScrollPage {
 export const TASKS_PAGE_SIZE = 500
 
 /**
- * 游标分页拉取全部任务——后端 keyset（create_time DESC, id DESC 稳定排序），无页码上限，
+ * 游标分页拉取指定范围的全部任务——后端 keyset（create_time DESC, id DESC 稳定排序），无页码上限，
  * 任务再多也不会像旧 offset 分页那样被页码钳制截断。
  *
  * <p>游标分页每页依赖上一页的游标，天然串行（在途请求恒为 1，对后端最温和）。
@@ -38,8 +54,10 @@ export const TASKS_PAGE_SIZE = 500
  *   <li>非首页出现任何已见 id → 重复页（游标未推进）→ 报错中止；</li>
  *   <li>hasMore=true 却缺游标 / 声称有下一页却返回空页 → 分页无法推进 → 报错中止。</li>
  * </ul>
+ *
+ * @param scope 任务范围；缺省 COMPANY（旧调用方不传 = 公司任务，与后端缺省一致）
  */
-export async function fetchAllTaskRows(): Promise<TaskRow[]> {
+export async function fetchAllTaskRows(scope: TaskScope = SCOPE_COMPANY): Promise<TaskRow[]> {
   // Map 保插入序：吸收按页序进行，最终数组顺序与后端排序一致
   const byId = new Map<number, TaskRow>()
   const absorb = (rows: TaskRow[] | undefined): void => {
@@ -57,6 +75,7 @@ export async function fetchAllTaskRows(): Promise<TaskRow[]> {
       cursorTime,
       cursorId,
       size: TASKS_PAGE_SIZE,
+      taskScope: scope,
     })
     const rows = pg.records ?? []
 

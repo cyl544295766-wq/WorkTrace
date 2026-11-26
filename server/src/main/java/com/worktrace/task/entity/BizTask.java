@@ -60,6 +60,12 @@ public class BizTask {
     /** 重点标记 is_key：1=重点（首页「重点任务」卡展示） 0=普通 */
     private Integer isKey;
 
+    /**
+     * 任务范围 task_scope：COMPANY 公司任务 / PERSONAL 个人任务（缺省 COMPANY）。
+     * 与 category（业务分类）无关；同一条记录的全部后代范围一致，跨范围只能整树迁移。
+     */
+    private String taskScope;
+
     /** 完成时间 finish_time：状态首次变为已完成(2)时由 Service 派生，移出已完成时清空（非用户直填） */
     private LocalDateTime finishTime;
 
