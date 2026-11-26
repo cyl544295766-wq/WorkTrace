@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "type-check": "vue-tsc --noEmit",
+    "test:focus": "node --test scripts/test-focus-tasks.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

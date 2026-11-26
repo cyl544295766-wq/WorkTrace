@@ -20,6 +20,8 @@ import {
   VideoPlay,
 } from '@element-plus/icons-vue'
 import { fetchAllTaskRows } from '@/api/tasks'
+import { isInsightCurrent, type AiInsight } from '@/api/insights'
+import { buildFocusTasks } from '@/utils/focusTasks'
 import { httpGet, httpPut } from '@/api/request'
 
 // ── 按需注册：折线 + 环形（饼） + 常用组件 + Canvas 渲染器 ──
@@ -49,6 +51,7 @@ interface HomeTask {
   id: number
   title: string
   status: number // 0待办 1进行中 2已完成 3已延期
+  priority: number
   planDate: string | null // YYYY-MM-DD
   isKey: number | null // 重点标记 1=重点（任务管理「设重点」） 0=普通
   createTime: string | null // ISO LocalDateTime
@@ -529,24 +532,21 @@ watch([tasks, rangeDays], () => {
   renderDonut()
 })
 
-/* ── 重点任务（任务管理「设重点」标记的任务，按计划日期最近在前最多 3 条；勾选走真接口并回读派生状态） ── */
-const keyTasks = computed(() =>
-  [...tasks.value]
-    .filter((t) => t.isKey === 1)
-    .sort((a, b) => (a.planDate ?? '9999-99-99').localeCompare(b.planDate ?? '9999-99-99'))
-    .slice(0, 3),
-)
+/* ── 未完成重点任务：按紧急程度、日期、优先级、ID 排序，最多展示 3 条 ── */
+const focusTasks = computed(() => buildFocusTasks(tasks.value, dateKey(now.value)))
+const completingKeyIds = ref(new Set<number>())
 async function toggleKeyRow(row: HomeTask): Promise<void> {
-  const next = row.status === 2 ? 0 : 2
+  if (completingKeyIds.value.has(row.id)) return
+  completingKeyIds.value.add(row.id)
   try {
-    await httpPut('/tasks', { id: row.id, status: next, progress: next === 2 ? 100 : 0 })
+    // 只提交完成状态；进度与完成时间由服务端派生，重点标记保留。
+    await httpPut('/tasks', { id: row.id, status: 2 })
+    await loadTasks() // 成功回读后过滤已完成项，后续任务自动补位
   } catch {
-    return // 错误已由 request.ts 弹出
+    // 请求失败时保留原行，错误已由 request.ts 提示。
+  } finally {
+    completingKeyIds.value.delete(row.id)
   }
-  await loadTasks() // 回读：完成时间/父级派生以后端为准
-}
-function fmtMd(s: string | null): string {
-  return s ? s.slice(5) : ''
 }
 const STATUS_TAG: Record<number, { label: string; cls: string }> = {
   0: { label: '待处理', cls: 'tag--pending' },
@@ -556,50 +556,55 @@ const STATUS_TAG: Record<number, { label: string; cls: string }> = {
 }
 
 /* ── AI 工作洞察：优先用 /api/insights/work 的 AI 文案；
- * 下面的 fallbackInsight 是本地规则兜底（按真实完成率分档），
- * 在 AI 返回前占位、网络失败时保底 ── */
+ * 本地规则兜底直接使用当前任务生成事实；快照不匹配或网络失败时不显示旧文案 ── */
 const fallbackInsight = computed(() => {
   const t = total.value
-  const rate = t ? done.value / t : 0
+  const today = dateKey(now.value)
+  const overdue = tasks.value.filter((row) => row.status !== 2 && row.planDate && row.planDate < today).length
+  const highPending = tasks.value.filter((row) => row.status !== 2 && row.priority === 3).length
+  let facts = `共${t}项，已完成${done.value}项，未完成${t - done.value}项。`
+  if (overdue) facts += `逾期${overdue}项。`
+  if (highPending) facts += `高优未完成${highPending}项。`
   if (t === 0) {
     return {
       headline: '从第一件任务开始吧',
-      para: '还没有任务记录，点击右上角「新增任务」开始记录你的工作轨迹。',
-      advice: '万事开头难，先建一个小目标！',
+      para: `${facts}还没有任务记录，可以从创建任务开始。`,
+      advice: '创建任务，记录工作轨迹',
       source: 'RULES' as const,
     }
   }
-  if (rate >= 0.6) {
+  if (done.value === t) {
     return {
-      headline: '今日工作状态良好',
-      para: '近期任务完成情况稳定，建议优先处理临近截止的任务，合理安排后续工作计划。',
-      advice: '保持当前节奏，继续高效推进！',
+      headline: '任务已全部完成',
+      para: `${facts}可以整理本阶段成果，再安排后续计划。`,
+      advice: '整理成果，规划后续工作',
       source: 'RULES' as const,
     }
   }
-  if (rate >= 0.2) {
+  if (overdue) {
     return {
-      headline: '任务推进中，注意节奏',
-      para: '部分任务仍在进行中，建议聚焦高优先级事项，为临近截止的任务预留缓冲时间。',
-      advice: '抓大放小，优先攻克高优任务！',
+      headline: '优先处理逾期任务',
+      para: `${facts}先核对逾期原因，再安排后续工作。`,
+      advice: '核对逾期事项并明确处理计划',
+      source: 'RULES' as const,
+    }
+  }
+  if (highPending) {
+    return {
+      headline: '关注高优先级任务',
+      para: `${facts}优先推进高优任务，并为临近到期事项预留时间。`,
+      advice: '先推进高优任务，再安排其他事项',
       source: 'RULES' as const,
     }
   }
   return {
-    headline: '任务积压，需要加速',
-    para: '待处理任务占比较高，建议今天先清理低优与过期事项，重新排定本周计划。',
-    advice: '先清一批待办，再规划新任务！',
+    headline: '按优先级稳步推进',
+    para: `${facts}根据截止日期和实际进度安排后续工作。`,
+    advice: '确认待办事项的下一步行动',
     source: 'RULES' as const,
   }
 })
 
-/** AI 洞察返回体（GET /api/insights/work） */
-interface AiInsight {
-  headline: string
-  para: string
-  advice: string
-  source: 'AI' | 'RULES'
-}
 const aiInsight = ref<AiInsight | null>(null)
 async function loadInsight(): Promise<void> {
   try {
@@ -622,20 +627,25 @@ async function refreshInsight(): Promise<void> {
     insightRefreshing.value = false
   }
 }
-/** 展示优先级：AI 洞察 > 本地规则兜底 */
-const activeInsight = computed(() => aiInsight.value ?? fallbackInsight.value)
+/** 仅展示与当前卡片一致的洞察；用户勾选任务后，旧缓存文案也立即退出展示。 */
+const activeInsight = computed(() => {
+  if (loading.value || loadFailed.value) {
+    return { headline: '任务数据尚未就绪', para: '任务统计加载完成后再展示洞察。', advice: '等待加载或重试', source: 'RULES' as const }
+  }
+  return isInsightCurrent(aiInsight.value, tasks.value, now.value) ? aiInsight.value! : fallbackInsight.value
+})
 
 /** 洞察面板的关键数据条：全部由已加载任务派生（无新增接口），用于分层展示与重点着色 */
 const insightStats = computed(() => {
   const t = total.value
   const rate = t ? Math.round((done.value / t) * 100) : 0
-  const today = dateKey(new Date())
-  const todayNew = tasks.value.filter((t2) => t2.createTime && dateKey(new Date(t2.createTime)) === today).length
+  const today = dateKey(now.value)
+  const todayNew = tasks.value.filter((t2) => t2.createTime?.slice(0, 10) === today).length
   const keyCount = tasks.value.filter((t2) => t2.isKey === 1).length
   return [
     { label: '完成率', value: `${rate}%`, color: '#25B978' },
     { label: '今日新增', value: `${todayNew}`, color: '#3978F6' },
-    { label: '重点任务', value: `${keyCount}`, color: '#FF8A3D' },
+    { label: '重点总数', value: `${keyCount}`, color: '#FF8A3D' },
   ]
 })
 
@@ -895,9 +905,169 @@ onBeforeUnmount(() => {
       </article>
     </section>
 
+    <!-- 今日聚焦优先于历史图表，DOM 顺序与阅读、键盘导航顺序保持一致 -->
+    <section class="focus-row" aria-label="今日聚焦与报告">
+      <div class="card focus-card reveal" :style="{ '--i': 5 }">
+        <div class="card__head focus-card__head">
+          <div>
+            <h2 class="card__title"><span class="title-bar" />今日聚焦</h2>
+            <p v-if="!loadFailed" class="focus-counts" aria-live="polite">
+              <strong>{{ focusTasks.unfinished }}</strong> 项未完成 · 重点总数 {{ focusTasks.total }} 项
+            </p>
+          </div>
+          <RouterLink class="card__more" to="/tasks">查看全部 →</RouterLink>
+        </div>
+        <div class="focus-card__body">
+          <div v-if="focusTasks.items.length" class="task-columns" aria-hidden="true">
+            <span>重点任务</span><span>状态</span><span>计划与到期</span>
+          </div>
+          <ul v-if="focusTasks.items.length" class="today__list">
+            <li
+              v-for="row in focusTasks.items"
+              :key="row.id"
+              class="today__row"
+              :class="`today__row--${row.deadline.tone}`"
+            >
+              <button
+                type="button"
+                class="check"
+                :disabled="completingKeyIds.has(row.id)"
+                :aria-busy="completingKeyIds.has(row.id)"
+                :aria-label="`将“${row.title}”标记为已完成`"
+                @click="toggleKeyRow(row)"
+              />
+              <span class="title" :title="row.title" @click="router.push('/tasks')">{{ row.title }}</span>
+              <span class="tag" :class="STATUS_TAG[row.status]?.cls">
+                {{ STATUS_TAG[row.status]?.label ?? '待办' }}
+              </span>
+              <span
+                class="deadline"
+                :class="`deadline--${row.deadline.tone}`"
+                :title="row.planDate ? `计划日期：${row.planDate}` : '未设置计划日期'"
+              >{{ row.deadline.label }}</span>
+            </li>
+          </ul>
+          <p v-if="focusTasks.remaining > 0" class="focus-remaining">
+            当前展示前 {{ focusTasks.items.length }} 项，另有 {{ focusTasks.remaining }} 项未完成重点任务
+          </p>
+          <div v-if="!focusTasks.items.length" class="empty-focus">
+            <div class="empty-focus__art" aria-hidden="true">
+              <span class="empty-focus__card">
+                <span class="empty-focus__check">
+                  <el-icon :size="13"><Check /></el-icon>
+                </span>
+                <span class="empty-focus__line empty-focus__line--1" />
+                <span class="empty-focus__line empty-focus__line--2" />
+              </span>
+              <span class="empty-focus__orb empty-focus__orb--1" />
+              <span class="empty-focus__orb empty-focus__orb--2" />
+            </div>
+            <p class="empty-focus__title">
+              {{ loadFailed ? '重点任务暂不可用' : focusTasks.total ? '重点任务已全部完成' : '还没有重点任务' }}
+            </p>
+            <p class="empty-focus__hint">
+              {{ loadFailed ? '请点击上方重新加载后重试' : focusTasks.total ? `已完成 ${focusTasks.total} 项重点任务，重点标记会保留。` : '去任务管理点「设重点」，让关键事项浮到首页' }}
+            </p>
+            <RouterLink v-if="!loadFailed" class="empty-focus__link" to="/tasks">
+              {{ focusTasks.total ? '查看全部任务 →' : '去标记重点 →' }}
+            </RouterLink>
+          </div>
+        </div>
+      </div>
+
+      <aside class="card insight-card reveal" :style="{ '--i': 6 }" aria-label="AI 工作洞察">
+        <div class="card__head insight-card__head">
+          <div>
+            <h2 class="card__title"><span class="title-bar title-bar--teal" />AI 工作洞察</h2>
+            <p class="insight-source">{{ activeInsight.source === 'AI' ? '基于当前任务的分析' : '基于当前任务的规则建议' }}</p>
+          </div>
+          <button
+            type="button"
+            class="ai-refresh"
+            :disabled="insightRefreshing"
+            :aria-label="insightRefreshing ? '正在生成新的洞察…' : '换一条 AI 洞察'"
+            @click="refreshInsight"
+          >
+            <el-icon :size="13" :class="{ spinning: insightRefreshing }"><Refresh /></el-icon>
+          </button>
+        </div>
+
+        <div class="ai-panel">
+          <!-- 当前任务指标 -->
+          <div class="ai-section">
+            <p class="ai-section__label">关键数据<i aria-hidden="true" /></p>
+            <div class="ai-stats" role="list">
+              <div
+                v-for="s in insightStats"
+                :key="s.label"
+                role="listitem"
+                class="ai-stat"
+                :style="{ '--stat': s.color }"
+              >
+                <strong>{{ s.value }}</strong>
+                <span>{{ s.label }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 分析正文 -->
+          <div class="ai-section ai-section--body">
+            <h3 class="ai-panel__headline">{{ activeInsight.headline }}</h3>
+            <p class="ai-panel__para">{{ activeInsight.para }}</p>
+          </div>
+
+          <!-- 行动建议 -->
+          <div class="ai-advice">
+            <span class="ai-advice__icon"><el-icon :size="15"><Sunny /></el-icon></span>
+            <div class="ai-advice__body">
+              <span class="ai-advice__label">行动建议</span>
+              <span class="ai-advice__value">{{ activeInsight.advice }}</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <div class="card reports reveal" :style="{ '--i': 7 }">
+        <div class="card__head">
+          <h2 class="card__title"><span class="title-bar title-bar--violet" />AI 报告中心</h2>
+          <RouterLink class="card__more" to="/reports">更多 →</RouterLink>
+        </div>
+        <div class="reports__tiles">
+          <div
+            v-for="(t, i) in reportTiles"
+            :key="t.type"
+            v-tilt="{ max: 3 }"
+            class="tile reveal"
+            role="button"
+            tabindex="0"
+            :style="{
+              '--i': 8 + i,
+              '--accent': t.color,
+              '--accent-soft': t.soft,
+              '--glow': t.glow,
+            }"
+            @click="router.push(`/reports?type=${t.type}`)"
+            @keyup.enter="router.push(`/reports?type=${t.type}`)"
+            @keydown.space.prevent="router.push(`/reports?type=${t.type}`)"
+          >
+            <span class="tile__badge">
+              <span class="tile__badge-orb">
+                <el-icon :size="24"><component :is="t.icon" /></el-icon>
+              </span>
+            </span>
+            <div class="tile__text">
+              <p class="tile__name">{{ t.label }}</p>
+              <p class="tile__sub">{{ t.sub }}</p>
+            </div>
+            <span class="tile__cta">{{ t.cta }}<i aria-hidden="true">→</i></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- 图表行：任务趋势 + 任务状态分布 -->
     <section class="charts-row">
-      <div class="card chart-card trend reveal" :style="{ '--i': 5 }">
+      <div class="card chart-card trend reveal" :style="{ '--i': 11 }">
         <div class="card__head">
           <h2 class="card__title"><span class="title-bar" />任务走势</h2>
           <div class="range-pills" role="group" aria-label="时间范围">
@@ -915,7 +1085,7 @@ onBeforeUnmount(() => {
         <div ref="trendEl" class="trend__chart" />
       </div>
 
-      <div class="card chart-card donut reveal" :style="{ '--i': 6 }">
+      <div class="card chart-card donut reveal" :style="{ '--i': 12 }">
         <div class="card__head">
           <h2 class="card__title">
             <span class="title-bar title-bar--teal" />任务状态分布
@@ -953,161 +1123,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </section>
-
-    <!-- 底部：重点任务 + AI 工作洞察 / AI 报告中心 -->
-    <section class="bottom-row">
-      <div class="card merged reveal" :style="{ '--i': 7 }">
-        <div class="card__head">
-          <h2 class="card__title"><span class="title-bar" />今日聚焦</h2>
-          <RouterLink class="card__more" to="/tasks">查看全部 →</RouterLink>
-        </div>
-        <div class="merged__body">
-          <div class="merged__col">
-            <h3 class="merged__sub"><span class="title-bar title-bar--sm" />重点任务</h3>
-            <ul v-if="keyTasks.length" class="today__list">
-              <li v-for="row in keyTasks" :key="row.id" class="today__row">
-                <button
-                  type="button"
-                  class="check"
-                  :class="{ done: row.status === 2 }"
-                  :aria-label="row.status === 2 ? '标记为待处理' : '标记为已完成'"
-                  @click="toggleKeyRow(row)"
-                >
-                  <el-icon v-if="row.status === 2" :size="12"><Check /></el-icon>
-                </button>
-                <span class="title" @click="router.push('/tasks')">{{ row.title }}</span>
-                <span class="tag" :class="STATUS_TAG[row.status]?.cls">
-                  {{ STATUS_TAG[row.status]?.label ?? '待办' }}
-                </span>
-                <span class="date">{{ fmtMd(row.planDate) }}</span>
-              </li>
-            </ul>
-            <div v-else class="empty-focus">
-              <div class="empty-focus__art" aria-hidden="true">
-                <span class="empty-focus__card">
-                  <span class="empty-focus__check">
-                    <el-icon :size="13"><Check /></el-icon>
-                  </span>
-                  <span class="empty-focus__line empty-focus__line--1" />
-                  <span class="empty-focus__line empty-focus__line--2" />
-                </span>
-                <span class="empty-focus__orb empty-focus__orb--1" />
-                <span class="empty-focus__orb empty-focus__orb--2" />
-              </div>
-              <p class="empty-focus__title">还没有重点任务</p>
-              <p class="empty-focus__hint">去任务管理点「设重点」，让关键事项浮到首页</p>
-              <RouterLink class="empty-focus__link" to="/tasks">去标记重点 →</RouterLink>
-            </div>
-          </div>
-
-          <div class="merged__col merged__col--ai">
-            <h3 class="merged__sub">
-              <span class="ai-sub-icon"><el-icon :size="13"><MagicStick /></el-icon></span>
-              AI 工作洞察
-              <span class="pill">智能分析</span>
-            </h3>
-            <div class="ai-panel">
-              <span class="ai-panel__glow" aria-hidden="true" />
-              <!-- 第一部分：模块标识（图标 + 分析状态）；标题与「智能分析」标签在上方栏头 -->
-              <div class="ai-panel__head">
-                <span class="ai-orb" aria-hidden="true">
-                  <span class="ai-orb__ring" />
-                  <span class="ai-orb__core"><el-icon :size="19"><MagicStick /></el-icon></span>
-                </span>
-                <div class="ai-panel__meta">
-                  <span class="ai-panel__eyebrow">AI WORK INSIGHT</span>
-                  <span class="ai-panel__live">
-                    <i />
-                    {{ activeInsight.source === 'AI' ? 'AI 实时分析' : '智能规则分析' }}
-                  </span>
-                </div>
-                <!-- 换一条：绕过服务端 30min 缓存重新生成洞察（洞察卡最右侧轻玻璃小圆钮） -->
-                <button
-                  type="button"
-                  class="ai-refresh"
-                  :disabled="insightRefreshing"
-                  :aria-label="insightRefreshing ? '正在生成新的洞察…' : '换一条 AI 洞察'"
-                  @click="refreshInsight"
-                >
-                  <el-icon :size="13" :class="{ spinning: insightRefreshing }"><Refresh /></el-icon>
-                </button>
-              </div>
-
-              <!-- 第二部分：关键数据指标（全部由已加载任务派生，数字用主题色强调） -->
-              <div class="ai-section">
-                <p class="ai-section__label">关键数据<i aria-hidden="true" /></p>
-                <div class="ai-stats" role="list">
-                  <div
-                    v-for="s in insightStats"
-                    :key="s.label"
-                    role="listitem"
-                    class="ai-stat"
-                    :style="{ '--stat': s.color }"
-                  >
-                    <strong>{{ s.value }}</strong>
-                    <span>{{ s.label }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- 第三部分：AI 分析正文 -->
-              <div class="ai-section ai-section--body">
-                <p class="ai-section__label">AI 分析<i aria-hidden="true" /></p>
-                <h4 class="ai-panel__headline">{{ activeInsight.headline }}</h4>
-                <p class="ai-panel__para">{{ activeInsight.para }}</p>
-              </div>
-
-              <!-- 第四部分：AI 建议 -->
-              <div class="ai-advice">
-                <span class="ai-advice__icon"><el-icon :size="15"><Sunny /></el-icon></span>
-                <div class="ai-advice__body">
-                  <span class="ai-advice__label">AI 建议</span>
-                  <span class="ai-advice__value">{{ activeInsight.advice }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card reports reveal" :style="{ '--i': 8 }">
-        <div class="card__head">
-          <h2 class="card__title"><span class="title-bar title-bar--violet" />AI 报告中心</h2>
-          <RouterLink class="card__more" to="/reports">更多 →</RouterLink>
-        </div>
-        <div class="reports__tiles">
-          <div
-            v-for="(t, i) in reportTiles"
-            :key="t.type"
-            v-tilt="{ max: 3 }"
-            class="tile reveal"
-            role="button"
-            tabindex="0"
-            :style="{
-              '--i': 9 + i,
-              '--accent': t.color,
-              '--accent-soft': t.soft,
-              '--glow': t.glow,
-            }"
-            @click="router.push(`/reports?type=${t.type}`)"
-            @keyup.enter="router.push(`/reports?type=${t.type}`)"
-            @keydown.space.prevent="router.push(`/reports?type=${t.type}`)"
-          >
-            <span class="tile__badge">
-              <span class="tile__badge-orb">
-                <el-icon :size="24"><component :is="t.icon" /></el-icon>
-              </span>
-            </span>
-            <div class="tile__text">
-              <p class="tile__name">{{ t.label }}</p>
-              <p class="tile__sub">{{ t.sub }}</p>
-            </div>
-            <span class="tile__divider" aria-hidden="true" />
-            <span class="tile__cta">{{ t.cta }}<i aria-hidden="true">→</i></span>
-          </div>
-        </div>
-      </div>
-    </section>
   </div>
 </template>
 
@@ -1123,7 +1138,8 @@ onBeforeUnmount(() => {
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-rows: auto auto auto auto; /* 行高由内容决定，图表行不再被底部行撑高 */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto; /* 按内容排布，今日聚焦先于图表 */
   gap: var(--wt-gap);
   width: 100%;
   flex: 1 0 auto;
@@ -1145,6 +1161,7 @@ onBeforeUnmount(() => {
 .home-page > section {
   position: relative;
   z-index: 1;
+  min-width: 0;
 }
 
 /* ── 环境光与点阵 ── */
@@ -1223,6 +1240,7 @@ onBeforeUnmount(() => {
 
 /* ── 通用卡片：白色半透明 + 多层柔和阴影 + 白色高光边 ── */
 .card {
+  min-width: 0;
   --lift: 0px;
   position: relative;
   border: 1px solid var(--wt-card-border);
@@ -1247,7 +1265,8 @@ onBeforeUnmount(() => {
 }
 
 .chart-card:hover,
-.merged:hover,
+.focus-card:hover,
+.insight-card:hover,
 .reports:hover {
   --lift: -4px;
 }
@@ -1312,14 +1331,15 @@ onBeforeUnmount(() => {
 
 /* ── 欢迎横幅 ── */
 .banner {
+  box-sizing: border-box;
   position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  min-height: 156px;
-  padding: 26px 30px;
+  min-height: 120px;
+  padding: 18px 24px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.9);
   border-radius: var(--wt-radius);
@@ -1630,9 +1650,10 @@ onBeforeUnmount(() => {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 16px;
-  min-height: 126px;
-  padding: 20px;
+  gap: 12px;
+  box-sizing: border-box;
+  min-height: 110px;
+  padding: 16px;
   overflow: hidden;
   border: 1px solid var(--wt-card-border);
   border-radius: var(--wt-radius);
@@ -2013,108 +2034,112 @@ onBeforeUnmount(() => {
   transition: width 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-/* ── 底部：重点任务 + AI 洞察 / 报告中心 ── */
-.bottom-row {
+/* ── 首屏工作区：重点任务 + AI 洞察 / 报告中心 ── */
+.focus-row {
   display: grid;
-  grid-template-columns: 1.65fr 1fr;
+  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr);
+  align-items: start;
   gap: var(--wt-gap);
-  min-height: 320px;
 }
 
-.merged,
+.focus-card,
+.insight-card,
 .reports {
   display: flex;
   flex-direction: column;
   padding: 20px 22px;
 }
 
-.merged {
+.focus-card {
   background:
     radial-gradient(560px 300px at 0% 0%, rgba(120, 168, 255, 0.06), transparent 62%),
     linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.74));
 }
 
 .reports {
+  grid-column: 1 / -1;
   background:
     radial-gradient(520px 300px at 100% 0%, rgba(124, 108, 240, 0.07), transparent 62%),
     linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.74));
 }
 
-.merged__body {
-  display: flex;
-  flex: 1;
-  gap: 24px;
+.focus-card__body {
   min-height: 0;
 }
 
-.merged__col {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
+.focus-card__head,
+.insight-card__head {
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.insight-card {
   min-width: 0;
+  background: linear-gradient(145deg, #f4fcfc, #fff 70%);
 }
 
-.merged__col + .merged__col {
-  padding-left: 24px;
-  border-left: 1px solid rgba(137, 151, 172, 0.14);
-}
-
-.merged__sub {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 0 12px;
-  color: #24324a;
-  font-size: 14px;
-  font-weight: 750;
-  letter-spacing: -0.01em;
-}
-
-.ai-sub-icon {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-  color: #fff;
-  background: linear-gradient(145deg, #8ff3ee, #20c5c1);
-  box-shadow:
-    0 4px 10px -6px rgba(32, 197, 193, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
-}
-
-.pill {
-  padding: 3px 9px;
-  border: 1px solid rgba(32, 197, 193, 0.2);
-  border-radius: 999px;
-  color: #168f8c;
+.focus-counts,
+.insight-source {
+  margin: 8px 0 0 13px;
+  color: #63738c;
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  background: rgba(255, 255, 255, 0.62);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  line-height: 1.6;
+}
+
+.focus-remaining {
+  color: #63738c;
+  font-size: 12px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-counts strong {
+  color: #24324a;
+}
+
+.focus-remaining {
+  margin: 14px 0 0;
+}
+
+.task-columns {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 76px 112px;
+  gap: 12px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid #e5ebf3;
+  color: #74839a;
+  font-size: 12px;
+}
+
+.task-columns span:first-child {
+  grid-column: 2;
+}
+
+.task-columns span:not(:first-child) {
+  text-align: right;
 }
 
 .today__list {
   display: flex;
-  flex: 1;
+  flex: none;
   flex-direction: column;
-  justify-content: center;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .today__row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 76px 112px;
+  grid-template-areas: 'check title status deadline';
   align-items: center;
   gap: 12px;
-  padding: 11px 12px;
-  border: 1px solid transparent;
-  border-radius: 14px;
+  min-height: 70px;
+  box-sizing: border-box;
+  padding: 12px 0;
+  border-bottom: 1px solid #e8edf5;
   transition:
     background 0.25s ease,
     border-color 0.25s ease,
@@ -2123,13 +2148,12 @@ onBeforeUnmount(() => {
 }
 
 .today__row:hover {
-  border-color: rgba(255, 255, 255, 0.9);
-  background: rgba(255, 255, 255, 0.66);
-  box-shadow: 0 8px 18px -14px rgba(36, 50, 74, 0.22);
-  transform: translateX(2px);
+  background: rgba(238, 244, 254, 0.6);
 }
 
 .check {
+  grid-area: check;
+  align-self: center;
   display: grid;
   place-items: center;
   flex: none;
@@ -2149,7 +2173,7 @@ onBeforeUnmount(() => {
     transform 0.18s ease;
 }
 
-.check:hover {
+.check:not(:disabled):hover {
   border-color: #20c5c1;
   box-shadow: 0 0 0 4px rgba(32, 197, 193, 0.14);
 }
@@ -2158,16 +2182,16 @@ onBeforeUnmount(() => {
   transform: scale(0.88);
 }
 
-.check.done {
-  border-color: transparent;
-  background: linear-gradient(145deg, #8ff3ee, #20c5c1);
-  box-shadow:
-    0 4px 10px -6px rgba(32, 197, 193, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+.check:disabled {
+  cursor: progress;
+  opacity: 0.5;
 }
 
 .today__row .title {
-  flex: 1;
+  grid-area: title;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   min-width: 0;
   overflow: hidden;
   color: #24324a;
@@ -2175,13 +2199,19 @@ onBeforeUnmount(() => {
   font-weight: 600;
   line-height: 1.4;
   letter-spacing: -0.005em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
 .today__row .title:hover {
   color: #3978f6;
+}
+
+.today__row .tag {
+  grid-area: status;
+  align-self: center;
+  justify-self: end;
 }
 
 .tag {
@@ -2224,14 +2254,26 @@ onBeforeUnmount(() => {
   background: rgba(255, 166, 61, 0.09);
 }
 
-.today__row .date {
-  flex: none;
-  width: 46px;
-  color: #74839a;
+.deadline {
+  grid-area: deadline;
+  justify-self: end;
+  color: #53647f;
   font-size: 12px;
   font-weight: 600;
-  text-align: right;
+  line-height: 1.5;
   font-variant-numeric: tabular-nums;
+}
+
+.deadline--overdue {
+  color: #b42318;
+}
+
+.deadline--today {
+  color: #8a5000;
+}
+
+.deadline--unscheduled {
+  font-weight: 400;
 }
 
 /* ── 空状态 3D 插画 ── */
@@ -2358,54 +2400,11 @@ onBeforeUnmount(() => {
   transform: translateY(-1px);
 }
 
-/* ── AI 工作洞察 ── */
-.merged__col--ai {
-  min-width: 0;
-}
-
+/* ── 独立洞察卡：指标、分析与建议按单一阅读流排列 ── */
 .ai-panel {
-  position: relative;
   display: flex;
-  flex: 1;
   flex-direction: column;
-  padding: 20px;
-  overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: var(--wt-radius-md);
-  background:
-    linear-gradient(150deg, rgba(240, 255, 254, 0.84), rgba(255, 255, 255, 0.58) 48%, rgba(237, 245, 255, 0.8))
-      padding-box,
-    linear-gradient(135deg, rgba(32, 197, 193, 0.4), rgba(255, 255, 255, 0.7) 40%, rgba(57, 120, 246, 0.28))
-      border-box;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 18px 36px -28px rgba(32, 197, 193, 0.3),
-    0 8px 20px -18px rgba(57, 120, 246, 0.2);
-  backdrop-filter: blur(18px) saturate(1.15);
-  -webkit-backdrop-filter: blur(18px) saturate(1.15);
-}
-
-/* 静态柔光：不再做周期性明暗变化，避免与其它动画抢注意力 */
-.ai-panel__glow {
-  position: absolute;
-  top: -80px;
-  right: -60px;
-  width: 200px;
-  height: 200px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(32, 197, 193, 0.22), transparent 68%);
-  filter: blur(8px);
-  pointer-events: none;
-}
-
-.ai-panel__head {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid rgba(137, 151, 172, 0.16);
+  gap: 20px;
 }
 
 /* 「换一条」：轻玻璃小圆钮，推到头部最右侧；加载时图标旋转（reduced-motion 全局关闭） */
@@ -2457,94 +2456,10 @@ onBeforeUnmount(() => {
   }
 }
 
-/* 3D 发光晶体：多面渐变球体 + 高光 + 内圈；收敛外发光，避免过亮 */
-.ai-orb {
-  position: relative;
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0) 44%),
-    conic-gradient(from 205deg at 50% 50%, #7cf0eb, #20c5c1 30%, #3978f6 66%, #a7ecff 100%);
-  box-shadow:
-    inset 0 2px 4px rgba(255, 255, 255, 0.7),
-    inset 0 -8px 14px rgba(16, 64, 110, 0.28),
-    0 10px 20px -14px rgba(32, 197, 193, 0.4),
-    0 0 0 5px rgba(32, 197, 193, 0.05);
-  animation: aiFloat 6s ease-in-out infinite;
-}
-
-.ai-orb__ring {
-  position: absolute;
-  inset: -6px;
-  border: 1px solid rgba(32, 197, 193, 0.3);
-  border-radius: 50%;
-  box-shadow: 0 0 16px rgba(32, 197, 193, 0.16);
-}
-
-.ai-orb__core {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  color: #fff;
-  background: rgba(255, 255, 255, 0.18);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.55),
-    inset 0 -2px 6px rgba(16, 64, 110, 0.22);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-}
-
-.ai-panel__meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.ai-panel__eyebrow {
-  color: #0f9c99;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-}
-
-.ai-panel__live {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: #6b7a91;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.ai-panel__live i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #25b978;
-  box-shadow: 0 0 0 3px rgba(37, 185, 120, 0.12);
-  animation: livePulse 2.8s ease-in-out infinite;
-}
-
 /* ── 分段标题：把面板切成「关键数据 / AI 分析 / AI 建议」三层结构 ── */
 .ai-section {
   position: relative;
   z-index: 1;
-}
-
-.ai-panel__head + .ai-section {
-  margin-top: 16px;
-}
-
-.ai-section--body {
-  margin-top: 16px;
-  margin-bottom: 16px;
 }
 
 .ai-section__label {
@@ -2569,20 +2484,19 @@ onBeforeUnmount(() => {
   z-index: 1;
   margin: 0 0 8px;
   color: #0f9c99;
-  font-size: 21px;
-  font-weight: 800;
+  font-size: 18px;
+  font-weight: 750;
   line-height: 1.4;
   letter-spacing: -0.02em;
-  text-shadow: 0 1px 14px rgba(32, 197, 193, 0.14);
 }
 
-/* 关键数据：三枚等宽玻璃 chip，顶部细色条 + 主题色数字做重点强调 */
+/* 关键数据：同一行内对齐，分隔线区分指标 */
 .ai-stats {
   position: relative;
   z-index: 1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 9px;
+  gap: 14px;
 }
 
 .ai-stat {
@@ -2590,28 +2504,13 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 12px 12px 11px;
+  padding: 0 12px 0 0;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.88);
-  border-radius: 13px;
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.5));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 5px 12px -9px rgba(36, 50, 74, 0.28);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  border-right: 1px solid #deebee;
 }
 
-.ai-stat::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 12px;
-  right: 12px;
-  height: 2px;
-  border-radius: 0 0 3px 3px;
-  background: var(--stat, #3978f6);
-  opacity: 0.7;
+.ai-stat:last-child {
+  border-right: 0;
 }
 
 .ai-stat strong {
@@ -2645,19 +2544,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  margin-top: auto;
-  padding: 14px 15px;
-  border: 1px solid transparent;
-  border-radius: 14px;
-  background:
-    linear-gradient(150deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.56)) padding-box,
-    linear-gradient(135deg, rgba(32, 197, 193, 0.5), rgba(255, 255, 255, 0.85) 45%, rgba(57, 120, 246, 0.32))
-      border-box;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    0 12px 26px -20px rgba(36, 50, 74, 0.4);
-  backdrop-filter: blur(14px) saturate(1.15);
-  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  padding: 12px;
+  border-left: 3px solid #20c5c1;
+  border-radius: 0 8px 8px 0;
+  background: #edf8f7;
 }
 
 /* 3D 圆形底座（收敛外发光） */
@@ -2701,7 +2591,6 @@ onBeforeUnmount(() => {
 /* ── AI 报告中心：3D 悬浮入口 ── */
 .reports__tiles {
   display: grid;
-  flex: 1;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin: 0;
@@ -2713,12 +2602,13 @@ onBeforeUnmount(() => {
   --lift: 0px;
   position: relative;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 0;
-  padding: 20px 14px 18px;
+  justify-content: flex-start;
+  gap: 12px;
+  min-height: 88px;
+  box-sizing: border-box;
+  padding: 16px;
   overflow: hidden;
   border: 1px solid var(--wt-card-border);
   border-radius: var(--wt-radius-md);
@@ -2788,8 +2678,9 @@ onBeforeUnmount(() => {
   position: relative;
   display: grid;
   place-items: center;
-  width: 58px;
-  height: 58px;
+  flex: none;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(232, 240, 252, 0.66));
   box-shadow:
@@ -2801,8 +2692,8 @@ onBeforeUnmount(() => {
 .tile__badge-orb {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   color: #fff;
   background: linear-gradient(145deg, var(--accent-soft), var(--accent));
@@ -2818,8 +2709,10 @@ onBeforeUnmount(() => {
 
 .tile__text {
   display: flex;
+  flex: 1;
+  min-width: 0;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 5px;
 }
 
@@ -2836,20 +2729,7 @@ onBeforeUnmount(() => {
   color: #6b7a91;
   font-size: 12px;
   line-height: 1.55;
-  text-align: center;
-}
-
-/* 分隔线：把入口卡切成“图标+说明 / 操作提示”两段，避免大片留白 */
-.tile__divider {
-  width: 100%;
-  height: 1px;
-  margin-top: 12px;
-  background: linear-gradient(
-    90deg,
-    rgba(137, 151, 172, 0),
-    rgba(137, 151, 172, 0.26),
-    rgba(137, 151, 172, 0)
-  );
+  text-align: left;
 }
 
 /* 轻量“进入”提示：胶囊型 CTA，仅作视觉引导，跳转逻辑与原入口一致 */
@@ -2857,17 +2737,13 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-top: 12px;
-  padding: 6px 13px;
-  border: 1px solid rgba(255, 255, 255, 0.9);
-  border-radius: 999px;
+  flex: none;
+  margin-left: auto;
+  padding: 4px 0;
   color: var(--accent);
   font-size: 12px;
   font-weight: 700;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.6));
-  box-shadow:
-    inset 0 1px 0 #fff,
-    0 6px 14px -10px var(--glow);
+  white-space: nowrap;
   transition:
     transform 0.25s ease,
     box-shadow 0.25s ease;
@@ -2879,13 +2755,7 @@ onBeforeUnmount(() => {
 }
 
 .tile:hover .tile__cta {
-  transform: translateY(-1px);
-  border-color: rgba(255, 255, 255, 1);
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.82));
-  box-shadow:
-    inset 0 1px 0 #fff,
-    0 8px 18px -10px var(--glow),
-    0 0 0 3px var(--glow);
+  transform: translateX(2px);
 }
 
 .tile:hover .tile__cta i {
@@ -2942,51 +2812,34 @@ onBeforeUnmount(() => {
   }
 }
 
-@keyframes aiFloat {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-4px);
-  }
-}
-
-@keyframes livePulse {
-  0%,
-  100% {
-    opacity: 0.65;
-    transform: scale(0.9);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.12);
-  }
-}
-
 /* ── 响应式 ── */
 @media (max-width: 1180px) {
   .home-page {
     grid-template-rows: auto auto auto auto;
   }
 
+  .kpi__bars {
+    display: none;
+  }
+
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1024px) {
   .kpi-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .charts-row,
-  .bottom-row {
-    grid-template-columns: 1fr;
-  }
-
-  .bottom-row {
-    min-height: 0;
+  .focus-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
 @media (max-width: 900px) {
   .banner {
-    padding: 24px;
+    padding: 18px 24px;
   }
 
   .banner__ring {
@@ -2998,16 +2851,8 @@ onBeforeUnmount(() => {
     justify-content: space-between;
   }
 
-  .merged__body {
-    flex-direction: column;
-    gap: 18px;
-  }
-
-  .merged__col + .merged__col {
-    padding-top: 18px;
-    padding-left: 0;
-    border-top: 1px solid rgba(137, 151, 172, 0.14);
-    border-left: 0;
+  .reports__tiles {
+    grid-template-columns: 1fr;
   }
 
   .empty-focus {
@@ -3073,7 +2918,7 @@ onBeforeUnmount(() => {
   }
 
   .banner {
-    padding: 22px 18px;
+    padding: 18px;
   }
 
   .banner__left h1 {
@@ -3085,22 +2930,34 @@ onBeforeUnmount(() => {
   }
 
   .kpi-row {
-    grid-template-columns: 1fr;
-    gap: 14px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
   }
 
   .kpi {
-    min-height: 112px;
-    padding: 16px;
+    min-height: 100px;
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .kpi__icon-wrap {
+    width: 38px;
+    height: 38px;
+  }
+
+  .kpi__orb {
+    width: 34px;
+    height: 34px;
   }
 
   .kpi__value {
-    font-size: 36px;
+    font-size: 30px;
   }
 
   .trend,
   .donut,
-  .merged,
+  .focus-card,
+  .insight-card,
   .reports {
     padding: 16px;
   }
@@ -3132,10 +2989,6 @@ onBeforeUnmount(() => {
     margin-left: auto;
   }
 
-  .tile__divider {
-    display: none;
-  }
-
   .tile__badge {
     width: 52px;
     height: 52px;
@@ -3146,31 +2999,39 @@ onBeforeUnmount(() => {
     height: 40px;
   }
 
-  .ai-panel {
-    padding: 15px;
-  }
-
   .ai-panel__headline {
     font-size: 18px;
   }
 
-  .merged__sub {
-    font-size: 13px;
+  .task-columns {
+    display: none;
   }
 
   .today__row {
-    gap: 9px;
-    padding: 9px 6px;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    grid-template-areas: 'check title status' '. deadline deadline';
+    gap: 4px 8px;
+    padding: 12px 0;
   }
 
-  .today__row .date {
-    width: 38px;
+  .today__row .check,
+  .today__row .tag {
+    align-self: start;
+  }
+
+  .deadline {
+    justify-self: start;
   }
 }
 
 @media (max-width: 420px) {
   .banner__actions {
     flex-direction: column;
+  }
+
+  .banner__actions .el-button {
+    flex: 0 0 var(--wt-btn-h);
+    margin-left: 0;
   }
 
   .kpi__bars {
@@ -3192,8 +3053,6 @@ onBeforeUnmount(() => {
   .kpi__orb,
   .empty-focus__card,
   .empty-focus__orb,
-  .ai-orb,
-  .ai-panel__live i,
   .ai-refresh .spinning,
   .tile__badge-orb {
     animation: none !important;
